@@ -10,14 +10,34 @@ const fs = require('fs');
 const path = require('path');
 const { EOL } = require('os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
-const Protos = require('./helpers/protos.js')([{
-    name: 'csgo',
-    protos: [
-        __dirname + '/protos/cstrike15_gcmessages.proto',
-        __dirname + '/protos/gcsdk_gcmessages.proto',
-        __dirname + '/protos/base_gcmessages.proto',
-    ]
-}]);
+// Исправление загрузки proto-файлов
+let Protos;
+try {
+    console.log('Loading proto files for csgo...');
+    const protoFiles = [
+        path.join(__dirname, '/protos/cstrike15_gcmessages.proto'),
+        path.join(__dirname, '/protos/gcsdk_gcmessages.proto'),
+        path.join(__dirname, '/protos/base_gcmessages.proto')
+    ];
+    
+    // Проверяем существование файлов
+    protoFiles.forEach((file, index) => {
+        if (fs.existsSync(file)) {
+            console.log(`Found proto file ${index + 1}: ${file}`);
+        } else {
+            console.error(`Proto file not found: ${file}`);
+        }
+    });
+    
+    Protos = require('./helpers/protos.js')([{
+        name: 'csgo',
+        protos: protoFiles
+    }]);
+    console.log('Proto files loaded successfully');
+} catch (error) {
+    console.error('Error loading proto files:', error);
+    Protos = { csgo: {} }; // Пустой объект для предотвращения ошибок
+}
 
 const browserWindowOptions = {
     webPreferences: {
@@ -486,6 +506,39 @@ ipcMain.handle("settings:set", (_, type, value) => settings.set(type, value));
  */
 function check_account(username, pass, sharedSecret) {
     return new Promise((resolve, reject) => {
+        // Добавляем таймаут для предотвращения бесконечной загрузки
+        const timeout = setTimeout(() => {
+            if (steamClient && !Done) {
+                console.log(`Таймаут для аккаунта ${username}, завершаем проверку`);
+                Done = true;
+                
+                // Если у нас есть хоть какие-то данные, возвращаем их
+                if (steamClient.steamID) {
+                    let data = {
+                        name: steamClient.accountInfo ? steamClient.accountInfo.name : username,
+                        steamid: steamClient.steamID.getSteamID64(),
+                        rank: 0,
+                        wins: 0,
+                        rank_wg: 0,
+                        wins_wg: 0,
+                        rank_dz: 0,
+                        wins_dz: 0,
+                        rank_premier: 0,
+                        wins_premier: 0,
+                        prime: false,
+                        error: null
+                    };
+                    
+                    currently_checking = currently_checking.filter(x => x !== username);
+                    resolve(data);
+                    try {
+                        steamClient.logOff();
+                    } catch (e) {
+                        console.error(`Ошибка при отключении аккаунта ${username}:`, e);
+                    }
+                }
+            }
+        }, 30000); // 30 секунд должно быть достаточно
         sleep = (ms) => {
             return new Promise(resolve=>{
                 setTimeout(resolve, ms);
@@ -559,18 +612,175 @@ function check_account(username, pass, sharedSecret) {
                         'Cookie': cookies.join('; ') + ';'
                     },
                 }).then(res => {
-                    let mm = /<td>Competitive<\/td><td>\d+<\/td><td>\d+<\/td><td>\d+<\/td><td>\d+<\/td><td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>/.exec(res.data);
-                    let wg = /<td>Wingman<\/td><td>\d+<\/td><td>\d+<\/td><td>\d+<\/td><td>\d+<\/td><td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>/.exec(res.data);
-                    let dz = /<td>Danger Zone<\/td><td>\d+<\/td><td>\d+<\/td><td>\d+<\/td><td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>/.exec(res.data);
+                    // Сохраняем HTML в файл для отладки
+                    try {
+                        fs.writeFileSync(`gcpd_${username}.html`, res.data);
+                        console.log(`Сохранен HTML для ${username} в файл gcpd_${username}.html`);
+                    } catch (e) {
+                        console.error(`Ошибка при сохранении HTML:`, e);
+                    }
+                    
+                    // Получаем данные о рангах из таблицы
+                    let rankTable = /<table class="generic_kv_table">([\s\S]*?)<\/table>/.exec(res.data);
+                    if (rankTable) {
+                        console.log(`Найдена таблица с рангами для ${username}`);
+                    }
+                    
+                    // Получаем данные из таблицы по точному формату
+                    // Исправленные регулярные выражения для корректного извлечения рангов из 5-й колонки
+                    let mm = /<td>Competitive<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>([^<]*)<\/td>\s*<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>\s*<td>([^<]*)<\/td>/.exec(res.data);
+                    let wg = /<td>Wingman<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>([^<]*)<\/td>\s*<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>\s*<td>([^<]*)<\/td>/.exec(res.data);
+                    let dz = /<td>Danger Zone<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>([^<]*)<\/td>\s*<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>\s*<td>([^<]*)<\/td>/.exec(res.data);
+                    let premier = /<td>Premier(?:\s*Matchmaking)?<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>([^<]*)<\/td>\s*<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>\s*<td>([^<]*)<\/td>/.exec(res.data);
+                    
+                    console.log(`Получены данные из GCPD для ${username}:`, { mm, wg, dz, premier });
 
+                    // Получаем уровень профиля CS:GO
+                    let profileRankMatch = /CS:GO Profile Rank:\s*(\d+)/.exec(res.data);
+                    if (profileRankMatch) {
+                        let profileRank = parseInt(profileRankMatch[1]);
+                        if (!isNaN(profileRank)) {
+                            data.lvl = profileRank;
+                            console.log(`Получен уровень профиля для ${username}: ${profileRank}`);
+                        }
+                    }
+
+                    // Получаем ранги и победы из веб-страницы
                     if (mm) {
-                        data.last_game = new Date(mm[1]);
+                        console.log(`Данные Competitive для ${username}:`, mm);
+                        data.last_game = new Date(mm[5]);
+                        if (!data.wins || data.wins === 0) {
+                            // Победы находятся во второй колонке
+                            data.wins = parseInt(mm[1]);
+                            console.log(`Установлено количество побед для ${username} (Competitive):`, data.wins);
+                        }
+                        // Получаем ранг из 5-й колонки
+                        if (!data.rank || data.rank === 0) {
+                            let rankValue = parseInt(mm[4]);
+                            if (!isNaN(rankValue) && rankValue > 0) {
+                                console.log(`Получен ранг из таблицы для ${username} (Competitive): ${rankValue}`);
+                                data.rank = rankValue;
+                            }
+                        }
                     }
+                    
+                    // Также пробуем получить ранг из других мест на странице
+                    let skillGroupMatch = /Skill Group: ([^<]+)</.exec(res.data);
+                    if (skillGroupMatch && (!data.rank || data.rank === 0)) {
+                        console.log(`Найдена Skill Group для ${username}:`, skillGroupMatch[1]);
+                        // Преобразуем название ранга в число
+                        let rankName = skillGroupMatch[1].trim();
+                        let rankMap = {
+                            'Silver I': 1, 'Silver II': 2, 'Silver III': 3, 'Silver IV': 4, 'Silver Elite': 5, 'Silver Elite Master': 6,
+                            'Gold Nova I': 7, 'Gold Nova II': 8, 'Gold Nova III': 9, 'Gold Nova Master': 10,
+                            'Master Guardian I': 11, 'Master Guardian II': 12, 'Master Guardian Elite': 13, 'Distinguished Master Guardian': 14,
+                            'Legendary Eagle': 15, 'Legendary Eagle Master': 16, 'Supreme Master First Class': 17, 'The Global Elite': 18
+                        };
+                        if (rankMap[rankName]) {
+                            data.rank = rankMap[rankName];
+                        }
+                    }
+                    
                     if (wg) {
-                        data.last_game_wg = new Date(wg[1]);
+                        console.log(`Данные Wingman для ${username}:`, wg);
+                        data.last_game_wg = new Date(wg[5]);
+                        if (!data.wins_wg || data.wins_wg === 0) {
+                            // Победы находятся во второй колонке
+                            data.wins_wg = parseInt(wg[1]);
+                            console.log(`Установлено количество побед для ${username} (Wingman):`, data.wins_wg);
+                        }
+                        // Получаем ранг Wingman из 5-й колонки
+                        if (!data.rank_wg || data.rank_wg === 0) {
+                            let rankValue = parseInt(wg[4]);
+                            if (!isNaN(rankValue) && rankValue > 0) {
+                                console.log(`Получен ранг из таблицы для ${username} (Wingman): ${rankValue}`);
+                                data.rank_wg = rankValue;
+                            }
+                        }
                     }
+                    
                     if (dz) {
-                        data.last_game_dz = new Date(dz[1]);
+                        console.log(`Данные Danger Zone для ${username}:`, dz);
+                        data.last_game_dz = new Date(dz[4]);
+                        if (!data.wins_dz || data.wins_dz === 0) {
+                            // Победы находятся во второй колонке
+                            data.wins_dz = parseInt(dz[1]);
+                            console.log(`Установлено количество побед для ${username} (Danger Zone):`, data.wins_dz);
+                        }
+                        // Для Danger Zone ранг в 5-й колонке
+                        if (!data.rank_dz || data.rank_dz === 0) {
+                            let rankValue = parseInt(dz[4]);
+                            if (!isNaN(rankValue) && rankValue > 0) {
+                                console.log(`Получен ранг из таблицы для ${username} (Danger Zone): ${rankValue}`);
+                                data.rank_dz = rankValue;
+                            }
+                        }
+                    }
+                    
+                    if (premier) {
+                        console.log(`Данные Premier для ${username}:`, premier);
+                        
+                        // Сохраняем исходную строку даты для отладки
+                        data.last_game_premier_str = premier[5];
+                        
+                        // Сохраняем дату в виде объекта с исходными данными
+                        data.premier_date = {
+                            year: parseInt(premier[5].substring(0, 4)),
+                            month: parseInt(premier[5].substring(5, 7)),
+                            day: parseInt(premier[5].substring(8, 10)),
+                            hours: parseInt(premier[5].substring(11, 13)),
+                            minutes: parseInt(premier[5].substring(14, 16)),
+                            seconds: parseInt(premier[5].substring(17, 19))
+                        };
+                        
+                        console.log(`Дата Premier для ${username} разобрана:`, data.premier_date);
+                        
+                        if (!data.wins_premier || data.wins_premier === 0) {
+                            // Победы находятся во второй колонке
+                            data.wins_premier = parseInt(premier[1]);
+                            console.log(`Установлено количество побед для ${username} (Premier):`, data.wins_premier);
+                        }
+                        // Получаем ранг Premier из 5-й колонки
+                        if (!data.rank_premier || data.rank_premier === 0) {
+                            // Добавляем логирование для всех колонок
+                            console.log(`Значения всех колонок для ${username} (Premier):`, premier);
+                            console.log(`Значение 5-й колонки (premier[4]) для ${username}:`, premier[4]);
+                            
+                            // Проверяем, есть ли значение в 5-й колонке
+                            if (premier[4] && premier[4].trim() !== '' && premier[4].trim() !== '&nbsp;') {
+                                let rankValue = parseInt(premier[4]);
+                                console.log(`Преобразованное значение ранга для ${username} (Premier):`, rankValue, typeof rankValue);
+                                
+                                if (!isNaN(rankValue) && rankValue > 0) {
+                                    console.log(`Получен ранг из таблицы для ${username} (Premier): ${rankValue}`);
+                                    data.rank_premier = rankValue;
+                                } else {
+                                    console.log(`Не удалось получить валидный ранг для ${username} (Premier)`);
+                                }
+                            } else {
+                                // Если в 5-й колонке пусто, но есть победы, то это истекший ранг
+                                if (data.wins_premier && data.wins_premier > 0) {
+                                    console.log(`Пустая ячейка в 5-й колонке, но есть победы (${data.wins_premier}). Устанавливаем истекший ранг для ${username} (Premier)`);
+                                    // Устанавливаем специальное значение для истекшего ранга
+                                    data.rank_premier = -1; // -1 будет означать истекший ранг
+                                } else {
+                                    console.log(`Пустая ячейка в 5-й колонке и нет побед. Устанавливаем неранжированный статус для ${username} (Premier)`);
+                                    data.rank_premier = 0; // 0 будет означать неранжированный статус
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Если мы получили данные из GCPD, завершаем проверку
+                    if (!Done && (mm || wg || dz || premier)) {
+                        console.log(`Завершаем проверку аккаунта ${username} после получения данных из GCPD`);
+                        // Очищаем поле error, если проверка прошла успешно
+                        data.error = null;
+                        Done = true;
+                        clearTimeout(timeout);
+                        currently_checking = currently_checking.filter(x => x !== username);
+                        resolve(data);
+                        steamClient.logOff();
                     }
                 }).catch(e => console.log(e.message));
             });
@@ -588,14 +798,31 @@ function check_account(username, pass, sharedSecret) {
             });
         });
 
-        let data = {};
-        data.prime = false;
+        let data = {
+            prime: false,
+            name: username,
+            steamid: null,
+            rank: 0,
+            wins: 0,
+            rank_wg: 0,
+            wins_wg: 0,
+            rank_dz: 0,
+            wins_dz: 0,
+            rank_premier: 0,
+            wins_premier: 0,
+            error: null
+        };
 
         steamClient.on('receivedFromGC', (appid, msgType, payload) => {
             console.log(`receivedFromGC ${msgType} on account ${username}`);
-            switch(msgType) {
-                case 4004: {
-                    let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
+            try {
+                switch(msgType) {
+                    case 4004: {
+                        if (!Protos.csgo.CMsgClientWelcome) {
+                            console.error(`Ошибка: Protos.csgo.CMsgClientWelcome не найден`);
+                            return;
+                        }
+                        let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
                     for (let i = 0; i < CMsgClientWelcome.outofdate_subscribed_caches.length; i++) {
                         let outofdate_cache = CMsgClientWelcome.outofdate_subscribed_caches[i];
                         for (let j = 0; j < outofdate_cache.objects.length; j++) {
@@ -606,26 +833,36 @@ function check_account(username, pass, sharedSecret) {
                             switch (cache_object.type_id) {
                             case 7: {
                                 let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                if ((CSOEconGameAccountClient.bonus_xp_usedflags & 16) != 0) { // EXPBonusFlag::PrestigeEarned
-                                    data.prime = true;
-                                }
+                                // Проверяем прайм-статус
+                                console.log(`Проверка прайм-статуса для ${username}, elevated_state:`, CSOEconGameAccountClient.elevated_state);
                                 if (CSOEconGameAccountClient.elevated_state == 5) { // bought prime
                                     data.prime = true;
+                                    console.log(`Аккаунт ${username} имеет прайм-статус`);
+                                } else {
+                                    data.prime = false;
+                                    console.log(`Аккаунт ${username} не имеет прайм-статус`);
                                 }
+                                if (data.rank_wg === undefined) data.rank_wg = 0;
+                                if (data.wins_wg === undefined) data.wins_wg = 0;
+                                if (data.rank_dz === undefined) data.rank_dz = 0;
+                                if (data.wins_dz === undefined) data.wins_dz = 0;
+                                if (data.rank_premier === undefined) data.rank_premier = 0;
+                                if (data.wins_premier === undefined) data.wins_premier = 0;
+                                
+                                sleep(1000).then(() => {
+                                    steamClient.sendToGC(appid, 9109, {}, Buffer.alloc(0));
+                                });
                                 break;
                             }
                             }
                         }
                     }
-                    sleep(1000).then(() => {
-                        steamClient.sendToGC(appid, 9109, {}, Buffer.alloc(0));
-                    });
                     break;
                 }
                 case 9110: {
                     {
-                        //request wingman and dz rank
-                        let message = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, { rankings: [ { rank_type_id: 7 }, { rank_type_id: 10 } ] });
+                        //request wingman, dz and premier rank
+                        let message = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, { rankings: [ { rank_type_id: 6 }, { rank_type_id: 7 }, { rank_type_id: 10 }, { rank_type_id: 11 } ] });
                         steamClient.sendToGC(appid, 9194, {}, message);
                     }
 
@@ -649,6 +886,14 @@ function check_account(username, pass, sharedSecret) {
                             data.lvl = msg.player_level;
                             data.steamid = steamClient.steamID.getSteamID64();
                             data.error = null;
+                            
+                            // Сохраняем прайм-статус в базе данных
+                            let account = db.get(username);
+                            if (account) {
+                                account.prime = data.prime;
+                                db.set(username, account);
+                                console.log(`Обновлен прайм-статус для ${username} в базе данных:`, data.prime);
+                            }
                             if(data.rank_wg != undefined && data.rank_dz != undefined) {
                                 resolve(data);
                                 steamClient.logOff();
@@ -660,34 +905,54 @@ function check_account(username, pass, sharedSecret) {
                 case 9194: {
                     let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
                     for (const ranking of msg.rankings) {
+                        if(ranking.rank_type_id == 6) { //competitive
+                            data.wins = ranking.wins;
+                            data.rank = ranking.rank_id;
+                            console.log(`Competitive rank для ${username}: ${data.rank}, wins: ${data.wins}`);
+                        }
                         if(ranking.rank_type_id == 7) { //wingman
                             data.wins_wg = ranking.wins;
                             data.rank_wg = ranking.rank_id;
+                            console.log(`Wingman rank для ${username}: ${data.rank_wg}, wins: ${data.wins_wg}`);
                             if(data.wins === -1) { //vac banned
-                                data.wins_wg == -1;
-                                data.rank_wg == -1;
-                            }
-                            if(data.steamid != undefined && data.rank_dz != undefined) {
-                                resolve(data);
-                                steamClient.logOff();
-                                break;
+                                data.wins_wg = -1;
+                                data.rank_wg = -1;
                             }
                         }
                         if(ranking.rank_type_id == 10) { //dangerzone
                             data.wins_dz = ranking.wins;
                             data.rank_dz = ranking.rank_id;
+                            console.log(`Danger Zone rank для ${username}: ${data.rank_dz}, wins: ${data.wins_dz}`);
                             if(data.wins === -1) { //vac banned
-                                data.wins_dz == -1;
-                                data.rank_dz == -1;
+                                data.wins_dz = -1;
+                                data.rank_dz = -1;
                             }
-                            if(data.steamid != undefined && data.rank_wg != undefined) {
-                                resolve(data);
-                                steamClient.logOff();
-                                break;
+                        }
+                        if(ranking.rank_type_id == 11) { //premier
+                            data.wins_premier = ranking.wins;
+                            data.rank_premier = ranking.rank_id;
+                            console.log(`Premier rank для ${username}: ${data.rank_premier}, wins: ${data.wins_premier}`);
+                            if(data.wins === -1) { //vac banned
+                                data.wins_premier = -1;
+                                data.rank_premier = -1;
                             }
                         }
                     }
+                    
+                    // Если у нас есть steamid и хотя бы один ранг, можем завершать
+                    if(data.steamid != undefined && 
+                      (data.rank != undefined || data.rank_wg != undefined || data.rank_dz != undefined || data.rank_premier != undefined)) {
+                        // Очищаем поле error, если проверка прошла успешно
+                        data.error = null;
+                        Done = true;
+                        clearTimeout(timeout);
+                        resolve(data);
+                        steamClient.logOff();
+                    }
                 }
+            }
+            } catch (error) {
+                console.error(`Ошибка при обработке сообщения от Game Coordinator для ${username}:`, error);
             }
         });
     });    

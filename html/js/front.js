@@ -14,7 +14,7 @@ let encrypted = false;
  * Get correct image name for given rank
  * @param {Number} rank ranking
  * @param {Number} wins number of wins
- * @param {'mm' | 'wg' | 'dz'} type rank type 
+ * @param {'mm' | 'wg' | 'dz' | 'premier'} type rank type 
  * @returns {String}
  */
 function getRankImage(rank, wins, type) {
@@ -23,14 +23,45 @@ function getRankImage(rank, wins, type) {
     case 'mm': prefix += 'skillgroup'; break;
     case 'wg': prefix += 'wingman'; break;
     case 'dz': prefix += 'dangerzone'; break;
+    case 'premier': prefix += 'premier'; break; // Use new premier images
   }
-  if (rank <= 0) {
-    rank = 0;
+  
+  if (type === 'premier') {
+    // Для Premier используем ранги на основе рейтинга
+    
+    // Проверяем на истекший ранг (-1)
+    if (rank === -1) {
+      console.log('Premier expired rank detected (-1)');
+      return prefix + '_expired.svg'; // Истекший ранг
+    }
+    // Проверяем на пустую ячейку таблицы или неранжированный статус
+    else if (rank === null || rank === undefined || rank === 0 || rank === '') {
+      return prefix + '_none.svg'; // Неранжированный
+    } else if (rank >= 1 && rank <= 4999) {
+      return prefix + '1.svg'; // 1-4999
+    } else if (rank >= 5000 && rank <= 9999) {
+      return prefix + '2.svg'; // 5000-9999
+    } else if (rank >= 10000 && rank <= 14999) {
+      return prefix + '3.svg'; // 10000-14999
+    } else if (rank >= 15000 && rank <= 19999) {
+      return prefix + '4.svg'; // 15000-19999
+    } else if (rank >= 20000 && rank <= 24999) {
+      return prefix + '5.svg'; // 20000-24999
+    } else if (rank >= 25000 && rank <= 29999) {
+      return prefix + '6.svg'; // 25000-29999
+    } else if (rank >= 30000) {
+      return prefix + '7.svg'; // 30000+
+    }
+  } else {
+    // Для других режимов используем стандартную логику
+    if (rank <= 0) {
+      rank = 0;
+    }
+    if (rank == 0 && wins >= 10) {
+      return prefix + '_expired.svg';
+    }
+    return prefix + rank + '.svg';
   }
-  if (rank == 0 && wins >= 10) {
-    return prefix + '_expired.svg';
-  }
-  return prefix + rank + '.svg';
 }
 
 /**
@@ -39,7 +70,42 @@ function getRankImage(rank, wins, type) {
  * @param {Number} wins number of wins
  * @returns {String} rank name
  */
-function getRankName(rank, wins) {
+/**
+ * Get rank name for given rank id
+ * @param {Number} rank ranking
+ * @param {Number} wins number of wins
+ * @param {'mm' | 'wg' | 'dz' | 'premier'} type rank type (optional)
+ * @returns {String} rank name
+ */
+function getRankName(rank, wins, type) {
+  // Если это Premier ранг, используем специальную логику
+  if (type === 'premier') {
+    // Проверяем на истекший ранг (-1)
+    if (rank === -1) {
+      return "Premier Rating: Expired";
+    }
+    // Проверяем на пустую ячейку таблицы или неранжированный статус
+    else if (rank === null || rank === undefined || rank === 0 || rank === '') {
+      return "Unranked";
+    } else if (rank >= 1 && rank <= 4999) {
+      return `Premier Rating: ${rank} (1-4999)`;
+    } else if (rank >= 5000 && rank <= 9999) {
+      return `Premier Rating: ${rank} (5000-9999)`;
+    } else if (rank >= 10000 && rank <= 14999) {
+      return `Premier Rating: ${rank} (10000-14999)`;
+    } else if (rank >= 15000 && rank <= 19999) {
+      return `Premier Rating: ${rank} (15000-19999)`;
+    } else if (rank >= 20000 && rank <= 24999) {
+      return `Premier Rating: ${rank} (20000-24999)`;
+    } else if (rank >= 25000 && rank <= 29999) {
+      return `Premier Rating: ${rank} (25000-29999)`;
+    } else if (rank >= 30000) {
+      return `Premier Rating: ${rank} (30000+)`;
+    }
+    return `Premier Rating: ${rank}`;
+  }
+  
+  // Для других режимов используем стандартную логику
   if (rank <= 0) {
     rank = 0;
   }
@@ -150,11 +216,29 @@ function formatPenalty(reason, seconds) {
  * @returns {String}
  */
 function formatExpireTime(time) {
+  console.log('Original date:', time);
+  
+  // Проверяем, что дата валидна
+  if (!(time instanceof Date && !isNaN(time))) {
+    console.error('Invalid date provided to formatExpireTime');
+    return 'Invalid date';
+  }
+  
   time = new Date(time.getTime());
+  console.log('Converted date:', time);
   //https://github.com/dumbasPL/csgo-checker/issues/3#issuecomment-827474759
   //this is untested yet, i'm trusting what this guy says.
   time.setDate(time.getDate() + 30);
-  return time.toLocaleString();
+  console.log('Expire date:', time);
+  
+  // Форматируем дату вручную для большей надежности
+  let day = time.getDate().toString().padStart(2, '0');
+  let month = (time.getMonth() + 1).toString().padStart(2, '0');
+  let year = time.getFullYear();
+  let hours = time.getHours().toString().padStart(2, '0');
+  let minutes = time.getMinutes().toString().padStart(2, '0');
+  
+  return `${day}.${month}.${year} ${hours}:${minutes}`;
 }
 
 // credit: https://stackoverflow.com/a/11868398/5861427
@@ -339,7 +423,7 @@ function handleSort(elem, increment = true) {
         return [a[0], clone];
       });
     }
-    if (col_name == 'rank' || col_name == 'rank_dz' || col_name == 'rank_wg') {
+    if (col_name == 'rank' || col_name == 'rank_dz' || col_name == 'rank_wg' || col_name == 'rank_premier') {
       accounts = accounts.map(a => {
         let clone = Object.assign({}, a[1]);
         clone[col_name] = Math.max(clone[col_name], 0); //clap -1 to 0 so sorting works correctly
@@ -445,10 +529,31 @@ function updateRow(row, login, account, force) {
     row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
     row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
     row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
+    row.querySelector('.rank .premier').src = getRankImage(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier');
 
     let mm_expire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
     let wg_expire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
     let dz_expire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
+    let premier_expire = '';
+    // Используем новый формат даты
+    if (account.premier_date) {
+      console.log('Premier date object for ' + account.name + ':', account.premier_date);
+      
+      let d = account.premier_date;
+      
+      // Создаем дату последней игры
+      let lastGameDate = new Date(d.year, d.month - 1, d.day, d.hours, d.minutes, d.seconds);
+      console.log('Last game date for ' + account.name + ':', lastGameDate);
+      
+      // Форматируем дату последней игры
+      let day = lastGameDate.getDate().toString().padStart(2, '0');
+      let month = (lastGameDate.getMonth() + 1).toString().padStart(2, '0');
+      let year = lastGameDate.getFullYear();
+      let hours = lastGameDate.getHours().toString().padStart(2, '0');
+      let minutes = lastGameDate.getMinutes().toString().padStart(2, '0');
+      
+      premier_expire = `<br>last match ${day}.${month}.${year} ${hours}:${minutes}`;
+    }
 
     row.querySelector('.rank .mm').title = getRankName(account.rank ?? 0, account.wins ?? 0) +
       '<br>' + (account.wins < 0 ? '?' : account.wins ?? '?') + ' wins' + mm_expire;
@@ -456,11 +561,14 @@ function updateRow(row, login, account, force) {
       '<br>' + (account.wins_wg ?? '?') + ' wins' + wg_expire;
     row.querySelector('.rank .dz').title = getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0) +
       '<br>' + (account.wins_dz ?? '?') + ' wins' + dz_expire;
+    row.querySelector('.rank .premier').title = getRankName(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier') +
+      '<br>' + (account.wins_premier ?? '?') + ' wins' + premier_expire;
 
 
     bootstrap.Tooltip.getInstance(row.querySelector('.rank .mm'))._fixTitle();
     bootstrap.Tooltip.getInstance(row.querySelector('.rank .wg'))._fixTitle();
     bootstrap.Tooltip.getInstance(row.querySelector('.rank .dz'))._fixTitle();
+    bootstrap.Tooltip.getInstance(row.querySelector('.rank .premier'))._fixTitle();
 
     row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1)
 
@@ -474,7 +582,10 @@ function updateRow(row, login, account, force) {
   }
 
   if (account.penalty_seconds > 0) {
-    row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1)
+    row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
+    // Дополнительная проверка для очистки вкладки ban/error при обновлении счетчика
+    row.querySelector('.ban').innerText = '';
   }
 
   return changed;
