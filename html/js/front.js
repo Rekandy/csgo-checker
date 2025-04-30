@@ -1097,13 +1097,32 @@ document.addEventListener('DOMContentLoaded', () => {
             lastMatch = date.toLocaleString();
           }
           
+          // Преобразуем название группы навыков в номер ранга
+          let rank = 0;
+          if (mapData.skill_group) {
+            const rankMatch = mapData.skill_group.match(/\d+/);
+            if (rankMatch) {
+              rank = parseInt(rankMatch[0]);
+            }
+          }
+          
+          // Получаем путь к значку карты
+          const mapIconPath = getMapIconPath(mapName);
+          
           row.innerHTML = `
-            <td>${mapName}</td>
-            <td>${mapData.wins || 0}</td>
-            <td>${mapData.ties || 0}</td>
-            <td>${mapData.losses || 0}</td>
-            <td>${mapData.skill_group || 'N/A'}</td>
-            <td>${lastMatch}</td>
+            <td class="text-center" style="width: 50px;">
+              ${mapIconPath ? `<img src="${mapIconPath}" alt="${mapName}" style="max-width: 100%;" onerror="this.style.display='none'">` : ''}
+            </td>
+            <td class="text-center">${mapName}</td>
+            <td class="text-center">${mapData.wins || 0}</td>
+            <td class="text-center">${mapData.ties || 0}</td>
+            <td class="text-center">${mapData.losses || 0}</td>
+            <td class="text-center">
+              <img src="${getRankImage(rank, 0, 'mm')}" alt="${mapData.skill_group || 'N/A'}" class="rank-image" style="height: 26px;" 
+                   data-bs-toggle="tooltip" data-bs-html="true" 
+                   title="${mapData.skill_group || 'N/A'}">
+            </td>
+            <td class="text-center">${lastMatch}</td>
           `;
           
           mapsTableBody.appendChild(row);
@@ -1111,7 +1130,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         // Если данных нет, показываем сообщение
         const row = document.createElement('tr');
-        row.innerHTML = '<td colspan="6" class="text-center">No map data available</td>';
+        row.innerHTML = '<td colspan="7" class="text-center">No map data available</td>';
         mapsTableBody.appendChild(row);
       }
       
@@ -1121,3 +1140,54 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 })
+
+/**
+ * Получает путь к значку карты по её названию
+ * @param {String} mapName название карты
+ * @returns {String} путь к значку карты
+ */
+function getMapIconPath(mapName) {
+  // Список известных карт и их значков
+  const mapIcons = {
+    // Официальные карты
+    'Ancient': 'de_ancient.svg',
+    'Anubis': 'de_anubis.svg',
+    'Dust': 'de_dust.svg',
+    'Dust 2': 'de_dust2.svg',
+    'Dust II': 'de_dust2.svg', // Добавлено для поддержки альтернативного названия
+    'Inferno': 'de_inferno.svg',
+    'Mirage': 'de_mirage.svg',
+    'Nuke': 'de_nuke.svg',
+    'Overpass': 'de_overpass.svg',
+    'Train': 'de_train.svg',
+    'Vertigo': 'de_vertigo.svg',
+    'Baggage': 'ar_baggage.svg',
+    'Shoots': 'ar_shoots.svg',
+    'Italy': 'cs_italy.svg',
+    'Office': 'cs_office.svg',
+    
+    // Сообщества карт
+    'Pool Day': 'ar_pool_day.svg',
+    'Assembly': 'de_assembly.svg',
+    'Basalt': 'de_basalt.svg',
+    'Edin': 'de_edin.svg',
+    'Memento': 'de_memento.svg',
+    'Mills': 'de_mills.svg',
+    'Palais': 'de_palais.svg',
+    'Thera': 'de_thera.svg',
+    'Whistle': 'de_whistle.svg'
+  };
+  
+  // Проверяем, есть ли карта в списке
+  if (mapIcons[mapName]) {
+    return `img/maps-icons/${mapIcons[mapName]}`;
+  }
+  
+  // Если карта не найдена, пробуем определить по префиксу
+  if (mapName.startsWith('de_') || mapName.startsWith('ar_') || mapName.startsWith('cs_')) {
+    return `img/maps-icons/${mapName}.svg`;
+  }
+  
+  // Если ничего не найдено, возвращаем пустую строку
+  return '';
+}

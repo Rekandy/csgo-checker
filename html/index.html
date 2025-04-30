@@ -383,31 +383,33 @@
     </div>
   </div>
 
-  <div class="modal fade" id="mapsRatingModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Maps Rating - <span id="maps-username"></span></h5>
+  <div class="modal fade" id="mapsRatingModal" tabindex="-1" aria-labelledby="mapsRatingModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content bg-dark text-white">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title" id="mapsRatingModalLabel">Maps for <span id="maps-username"></span></h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
           <table class="table table-dark table-sm" id="maps-table">
             <thead>
               <tr>
-                <th>Map</th>
-                <th>Wins</th>
-                <th>Ties</th>
-                <th>Losses</th>
-                <th>Skill Group</th>
-                <th>Last Match</th>
+                <th class="text-center" style="width: 50px;"></th>
+                <th class="text-center">Map</th>
+                <th class="text-center">Wins</th>
+                <th class="text-center">Ties</th>
+                <th class="text-center">Losses</th>
+                <th class="text-center">Skill Group</th>
+                <th class="text-center">Last Match</th>
               </tr>
             </thead>
             <tbody>
-              <!-- Данные о картах будут добавлены сюда -->
+              <!-- Data will be added dynamically -->
             </tbody>
           </table>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
         </div>
       </div>
     </div>
