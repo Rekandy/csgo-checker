@@ -103,6 +103,9 @@
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
+          <th class="text-center" style="width: 80px;">
+            Maps
+          </th>
           <th class="sortable text-center" data-column-name="ban" data-sort-dir="none">
             Ban/Error
             <i class="material-icons sort-asc">arrow_drop_up</i>
@@ -161,6 +164,11 @@
       </td>
       <td class="rank">
         <img src="img/skillgroups/skillgroup_none.svg" alt="premier" class="rank-image me-1 premier" data-bs-toggle="tooltip" data-bs-html="true" title="ERROR">
+      </td>
+      <td class="maps text-center">
+        <a href="#!" class="text-white text-decoration-none show-maps" data-bs-toggle="tooltip" title="show maps rating">
+          <i class="material-icons">map</i>
+        </a>
       </td>
       <td class="ban"></td>
       <td class="actions">
@@ -367,6 +375,36 @@
         </div>
         <div class="modal-body">
           
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="mapsRatingModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Maps Rating - <span id="maps-username"></span></h5>
+        </div>
+        <div class="modal-body">
+          <table class="table table-dark table-sm" id="maps-table">
+            <thead>
+              <tr>
+                <th>Map</th>
+                <th>Wins</th>
+                <th>Ties</th>
+                <th>Losses</th>
+                <th>Skill Group</th>
+                <th>Last Match</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Данные о картах будут добавлены сюда -->
+            </tbody>
+          </table>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>

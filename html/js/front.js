@@ -515,7 +515,7 @@ function updateRow(row, login, account, force) {
 
     row.className = account.pending ? 'pending' : '';
 
-    row.querySelector('.steam_name').innerText = account.name ?? '?';
+    row.querySelector('.steam_name').innerText = account.name || '?';
     let tags = row.querySelector('.tags')
     while (tags.firstChild) {
       tags.firstChild.remove();
@@ -1065,4 +1065,59 @@ document.addEventListener('DOMContentLoaded', () => {
 
   ipcRenderer.invoke('ready');
 
+  // Обработчик для кнопки отображения рейтинга по картам
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('.show-maps')) {
+      const row = e.target.closest('tr');
+      const username = row.querySelector('.login').textContent;
+      
+      // Устанавливаем имя пользователя в заголовке модального окна
+      document.getElementById('maps-username').textContent = username;
+      
+      // Получаем данные о картах для этого пользователя
+      const account = account_cache[username];
+      
+      // Очищаем таблицу
+      const mapsTableBody = document.querySelector('#maps-table tbody');
+      mapsTableBody.innerHTML = '';
+      
+      // Если у аккаунта есть данные о картах, отображаем их
+      if (account && account.maps) {
+        // Сортируем карты по количеству побед (по убыванию)
+        const sortedMaps = Object.entries(account.maps).sort((a, b) => b[1].wins - a[1].wins);
+        
+        // Добавляем строки в таблицу
+        sortedMaps.forEach(([mapName, mapData]) => {
+          const row = document.createElement('tr');
+          
+          // Форматируем дату последнего матча
+          let lastMatch = 'N/A';
+          if (mapData.last_match) {
+            const date = new Date(mapData.last_match);
+            lastMatch = date.toLocaleString();
+          }
+          
+          row.innerHTML = `
+            <td>${mapName}</td>
+            <td>${mapData.wins || 0}</td>
+            <td>${mapData.ties || 0}</td>
+            <td>${mapData.losses || 0}</td>
+            <td>${mapData.skill_group || 'N/A'}</td>
+            <td>${lastMatch}</td>
+          `;
+          
+          mapsTableBody.appendChild(row);
+        });
+      } else {
+        // Если данных нет, показываем сообщение
+        const row = document.createElement('tr');
+        row.innerHTML = '<td colspan="6" class="text-center">No map data available</td>';
+        mapsTableBody.appendChild(row);
+      }
+      
+      // Открываем модальное окно
+      const mapsModal = new bootstrap.Modal(document.getElementById('mapsRatingModal'));
+      mapsModal.show();
+    }
+  });
 })
