@@ -49,55 +49,55 @@
       <thead>
         <tr>
           <th class="sortable" data-column-name="username" data-sort-dir="none">
-            login
+            Login
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable" data-column-name="name" data-sort-dir="none">
-            name
+            Name
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="text-center">
-            tags
+            Tags
           </th>
-          <th class="sortable" data-column-name="lvl" data-sort-dir="none">
-            lvl
+          <th class="sortable text-center" data-column-name="lvl" data-sort-dir="none">
+            Level
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable text-center" data-column-name="prime" data-sort-dir="none">
-            <img src="img/prime.svg" alt="prime" class="d-inline-block" style="height: 1rem;">
+            <img src="img/prime.svg" alt="prime" class="d-inline-block" style="height: 26px;">
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable text-center" data-column-name="rank" data-sort-dir="none">
-            comp
+            MM
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable text-center" data-column-name="rank_wg" data-sort-dir="none">
-            wm
+            WM
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable text-center" data-column-name="rank_dz" data-sort-dir="none">
-            dz
+            DZ
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable text-center" data-column-name="rank_premier" data-sort-dir="none">
-            premier
+            Premier
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="sortable text-center" data-column-name="ban" data-sort-dir="none">
-            ban/error
+            Ban/Error
             <i class="material-icons sort-asc">arrow_drop_up</i>
             <i class="material-icons sort-desc">arrow_drop_down</i>
           </th>
           <th class="text-center">
-            action
+            Action
           </th>
         </tr>
       </thead>
@@ -118,7 +118,23 @@
       </td>
       <td class="steam_name"></td>
       <td class="tags"></td>
-      <td class="level"></td>
+      <td class="level">
+        <div class="d-flex align-items-center">
+          <img src="img/ranks/1.png" alt="rank" class="rank-icon me-1" style="width: 26px; height: 26px;">
+          <div class="level-container" style="width: 130px;">
+            <div class="d-flex align-items-center justify-content-between" style="line-height: 1;">
+              <div class="d-flex align-items-center">
+                <span class="level-label">Rank</span>
+                <span class="level-value">20</span>
+              </div>
+              <span class="exp-text"><span class="exp-value">4901</span>/5000</span>
+            </div>
+            <div class="progress mt-1" style="height: 3px; width: 100%;">
+              <div class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="5000"></div>
+            </div>
+          </div>
+        </div>
+      </td>
       <td class="prime">
         <img src="img/prime.svg" alt="prime">
       </td>

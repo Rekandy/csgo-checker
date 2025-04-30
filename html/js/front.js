@@ -423,14 +423,22 @@ function handleSort(elem, increment = true) {
         return [a[0], clone];
       });
     }
-    if (col_name == 'rank' || col_name == 'rank_dz' || col_name == 'rank_wg' || col_name == 'rank_premier') {
+    // Специальная обработка для уровня
+    else if (col_name == 'lvl') {
+      accounts = accounts.map(a => {
+        let clone = Object.assign({}, a[1]);
+        clone.lvl = clone.lvl ?? 0;
+        return [a[0], clone];
+      });
+    }
+    else if (col_name == 'rank' || col_name == 'rank_dz' || col_name == 'rank_wg' || col_name == 'rank_premier') {
       accounts = accounts.map(a => {
         let clone = Object.assign({}, a[1]);
         clone[col_name] = Math.max(clone[col_name], 0); //clap -1 to 0 so sorting works correctly
         return [a[0], clone];
       });
     }
-    if (col_name == 'prime') {
+    else if (col_name == 'prime') {
       accounts = accounts.map(a => {
         let clone = Object.assign({}, a[1]);
         clone.prime = clone.prime ? 1 : 0; //convert to integer
@@ -458,7 +466,6 @@ function handleSort(elem, increment = true) {
     let node = document.getElementById('acc-' + login);
     tbody.insertBefore(node, null);
   })
-
 }
 
 /**
@@ -523,8 +530,36 @@ function updateRow(row, login, account, force) {
         tags.appendChild(badge);
       });
     }
-    row.querySelector('.level').innerText = account.lvl ?? '?';
-    row.querySelector('.prime img').className = account.steamid ? account.prime ? 'prime-green' : 'prime-red' : '';
+    
+    // Обновляем шкалу прогресса опыта
+    let expProgress = row.querySelector('.level .progress-bar');
+    let expText = row.querySelector('.level .exp-value');
+    let levelValue = row.querySelector('.level .level-value');
+    let rankIcon = row.querySelector('.level .rank-icon');
+    
+    // Обновляем уровень профиля и значок ранга
+    let level = account.lvl ?? 0;
+    levelValue.innerText = level;
+    
+    // Определяем номер значка ранга (от 1 до 40)
+    let rankNumber = Math.min(Math.max(level, 1), 40);
+    rankIcon.src = `img/ranks/${rankNumber}.png`;
+    
+    // Обновляем прогресс опыта
+    if (account.exp !== undefined) {
+        let expPercent = (account.exp / 5000) * 100;
+        expProgress.style.width = `${expPercent}%`;
+        expProgress.setAttribute('aria-valuenow', account.exp);
+        expText.innerText = account.exp;
+    } else {
+        expProgress.style.width = '0%';
+        expProgress.setAttribute('aria-valuenow', 0);
+        expText.innerText = '0';
+    }
+    
+    row.querySelector('.prime img').className = account.steamid ? 
+        (account.prime && !(account.rank === 0 && account.rank_wg === 0 && account.rank_dz === 0 && account.rank_premier === 0)) ? 
+        'prime-green' : 'prime-red' : '';
 
     row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
     row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
@@ -574,9 +609,9 @@ function updateRow(row, login, account, force) {
 
     row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
 
-    let dis = account.steamid ? 'inline-block' : 'none';
-    row.querySelector('.copy-code').style.display = dis;
-    row.querySelector('.open-pofile').style.display = dis;
+    // Отображаем кнопки для всех аккаунтов
+    row.querySelector('.copy-code').style.display = 'inline-block';
+    row.querySelector('.open-pofile').style.display = 'inline-block';
 
     changed = true;
   }
@@ -989,6 +1024,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     changeLogModal_div.querySelector('.modal-body').innerHTML = md_converter.makeHtml(markdown);
     changeLogModal.show();
+  });
+
+  // Обработчик обновления данных аккаунта
+  ipcRenderer.on('accounts:updated', (_, { login, data }) => {
+    console.log(`Получено обновление для аккаунта ${login}:`, data);
+    let row = document.getElementById('acc-' + login);
+    if (row) {
+      updateRow(row, login, data, true);
+    }
   });
 
   updateAccounts();

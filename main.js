@@ -607,6 +607,52 @@ function check_account(username, pass, sharedSecret) {
 
         steamClient.on('webSession', (sessionID, cookies) => {
             sleep(1000).then(() => {
+                // Запрос для получения уровня профиля
+                axios.get(`https://steamcommunity.com/profiles/${steamClient.steamID.getSteamID64()}/gcpd/730?tab=accountmain`, {
+                    headers: {
+                        'Cookie': cookies.join('; ') + ';'
+                    },
+                }).then(res => {
+                    // Получаем уровень профиля CS:GO
+                    let profileRankMatch = /CS:GO Profile Rank:\s*(\d+)/.exec(res.data);
+                    if (profileRankMatch) {
+                        let profileRank = parseInt(profileRankMatch[1]);
+                        if (!isNaN(profileRank)) {
+                            data.lvl = profileRank;
+                            console.log(`Получен уровень профиля для ${username}: ${profileRank}`);
+                            
+                            // Парсим опыт профиля
+                            let expMatch = /Experience points earned towards next rank:\s*(\d+)/.exec(res.data);
+                            if (expMatch) {
+                                let expPoints = parseInt(expMatch[1]);
+                                if (!isNaN(expPoints)) {
+                                    data.exp = expPoints;
+                                    console.log(`Получен опыт профиля для ${username}: ${expPoints}`);
+                                }
+                            }
+                            
+                            // Сохраняем в базу данных
+                            let account = db.get(username);
+                            if (account) {
+                                account.lvl = profileRank;
+                                if (data.exp !== undefined) {
+                                    account.exp = data.exp;
+                                }
+                                db.set(username, account);
+                                console.log(`Данные профиля сохранены в базе данных для ${username}`);
+                                // Отправляем обновленные данные через IPC
+                                if (win) {
+                                    win.webContents.send('accounts:updated', {
+                                        login: username,
+                                        data: account
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }).catch(e => console.log(e.message));
+
+                // Запрос для получения рангов
                 axios.get(`https://steamcommunity.com/profiles/${steamClient.steamID.getSteamID64()}/gcpd/730?tab=matchmaking`, {
                     headers: {
                         'Cookie': cookies.join('; ') + ';'
@@ -634,16 +680,6 @@ function check_account(username, pass, sharedSecret) {
                     let premier = /<td>Premier(?:\s*Matchmaking)?<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>(\d+)<\/td>\s*<td>([^<]*)<\/td>\s*<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>\s*<td>([^<]*)<\/td>/.exec(res.data);
                     
                     console.log(`Получены данные из GCPD для ${username}:`, { mm, wg, dz, premier });
-
-                    // Получаем уровень профиля CS:GO
-                    let profileRankMatch = /CS:GO Profile Rank:\s*(\d+)/.exec(res.data);
-                    if (profileRankMatch) {
-                        let profileRank = parseInt(profileRankMatch[1]);
-                        if (!isNaN(profileRank)) {
-                            data.lvl = profileRank;
-                            console.log(`Получен уровень профиля для ${username}: ${profileRank}`);
-                        }
-                    }
 
                     // Получаем ранги и победы из веб-страницы
                     if (mm) {

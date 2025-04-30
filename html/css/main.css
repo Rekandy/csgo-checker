@@ -134,3 +134,33 @@ th.sortable[data-sort-dir="ASC"] .sort-asc, th.sortable[data-sort-dir="DESC"] .s
 #setup-encryption.encrypted .btn-danger {
   display: initial;
 }
+
+.level-container {
+  width: 130px;
+  min-width: 130px;
+  max-width: 130px;
+}
+
+.level-container .level-label {
+  font-size: 0.75rem;
+  color: #6c757d;
+  margin-right: 4px;
+}
+
+.level-container .level-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #fff;
+  min-width: 20px;
+  text-align: center;
+}
+
+.level-container .exp-text {
+  font-size: 0.75rem;
+  color: #6c757d;
+  white-space: nowrap;
+}
+
+.level-container .small.text-muted.me-1 {
+  font-size: 0.8rem;
+}
