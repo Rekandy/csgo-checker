@@ -557,9 +557,35 @@ function updateRow(row, login, account, force) {
         expText.innerText = '0';
     }
     
-    row.querySelector('.prime img').className = account.steamid ? 
-        (account.prime && !(account.rank === 0 && account.rank_wg === 0 && account.rank_dz === 0 && account.rank_premier === 0)) ? 
-        'prime-green' : 'prime-red' : '';
+    // Отладочный код для проверки значений рангов
+    console.log('Account:', login, 'Ranks:', {
+      rank: account.rank,
+      rank_wg: account.rank_wg,
+      rank_dz: account.rank_dz,
+      rank_premier: account.rank_premier
+    });
+    
+    // Проверяем, есть ли хотя бы один ненулевой ранг
+    const hasNonZeroRank = account.rank !== 0 || account.rank_wg !== 0 || account.rank_dz !== 0 || account.rank_premier !== 0;
+    console.log('Has non-zero rank:', hasNonZeroRank);
+    
+    // Применяем стили к значку Prime
+    const primeImg = row.querySelector('.prime img.prime-icon');
+    if (account.steamid) {
+      if (hasNonZeroRank) {
+        // Зеленый цвет для аккаунтов с Prime
+        primeImg.className = 'prime-icon prime-green';
+        console.log('Applied green color to Prime icon');
+      } else {
+        // Красный цвет для аккаунтов без Prime
+        primeImg.className = 'prime-icon prime-red';
+        console.log('Applied red color to Prime icon');
+      }
+    } else {
+      // Белый цвет для непроверенных аккаунтов
+      primeImg.className = 'prime-icon';
+      console.log('Applied white color to Prime icon');
+    }
 
     row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
     row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');

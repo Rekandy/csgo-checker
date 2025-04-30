@@ -3,17 +3,29 @@
 <head>
   <meta charset='utf-8'>
   <meta http-equiv='X-UA-Compatible' content='IE=edge'>
-  <title>CS:GO account checker</title>
+  <title>CS2 account checker</title>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <link rel="stylesheet" href="css/bootstrap.min.css">
   <link rel="stylesheet" href="css/material-icons.css">
   <link rel="stylesheet" href="css/main.css">
+  <style>
+    .prime img {
+      height: 26px;
+      filter: brightness(0) invert(1); /* Белый по умолчанию */
+    }
+    .prime img.prime-green {
+      filter: brightness(0) saturate(100%) invert(32%) sepia(100%) saturate(1307%) hue-rotate(93deg) brightness(98%) contrast(105%);
+    }
+    .prime img.prime-red {
+      filter: brightness(0) saturate(100%) invert(16%) sepia(42%) saturate(6385%) hue-rotate(355deg) brightness(100%) contrast(100%);
+    }
+  </style>
 </head>
 <body >
   
   <nav class="navbar navbar-expand-md navbar-dark fixed-top bg-danger ">
     <div class="container-fluid">
-      <a class="navbar-brand">CS:GO account checker</a>
+      <a class="navbar-brand">CS2 account checker</a>
       <ul class="navbar-nav me-auto">
       </ul>
       <div class="col-4 mb-0 me-3">
@@ -136,7 +148,7 @@
         </div>
       </td>
       <td class="prime">
-        <img src="img/prime.svg" alt="prime">
+        <img src="img/prime.svg" alt="prime" class="prime-icon">
       </td>
       <td class="rank">
         <img src="img/skillgroups/skillgroup_none.svg" alt="mm" class="rank-image me-1 mm" data-bs-toggle="tooltip" data-bs-html="true" title="ERROR">
@@ -152,7 +164,7 @@
       </td>
       <td class="ban"></td>
       <td class="actions">
-        <a href="#!" class="text-white text-decoration-none copy-code" data-bs-toggle="tooltip" title="copy CS:GO friend code">
+        <a href="#!" class="text-white text-decoration-none copy-code" data-bs-toggle="tooltip" title="copy CS2 friend code">
           <i class="material-icons">people</i>
         </a>
         <a href="#!" class="text-white text-decoration-none copy-passwd" data-bs-toggle="tooltip" title="copy password">

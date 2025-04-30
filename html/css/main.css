@@ -68,6 +68,20 @@ main {
 
 .prime img {
   height: 26px;
+  filter: brightness(0) invert(1);
+}
+
+.prime img.prime-icon {
+  height: 26px;
+  filter: brightness(0) invert(1);
+}
+
+.prime img.prime-green {
+  filter: brightness(0) saturate(100%) invert(32%) sepia(100%) saturate(1307%) hue-rotate(93deg) brightness(98%) contrast(105%);
+}
+
+.prime img.prime-red {
+  filter: brightness(0) saturate(100%) invert(16%) sepia(42%) saturate(6385%) hue-rotate(355deg) brightness(100%) contrast(100%);
 }
 
 .form-control-color {
