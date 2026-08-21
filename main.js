@@ -41,6 +41,9 @@ try {
 }
 
 // GC protocol constants (from gc_emsg.hpp in reference project)
+// NOTE: GC_HELLO_VERSION corresponds to the CS2 client version. Valve increments this
+// with game updates. If it falls too far behind, the GC may reject the hello or return
+// incomplete data. Update this value when Valve releases new CS2 client versions.
 const GC_HELLO_VERSION = 2000244;
 const GC_HELLO_RETRY_INTERVAL = 1500; // ms between hello retries
 const GC_HELLO_MAX_ATTEMPTS = 10;
@@ -530,20 +533,21 @@ function check_account(username, pass, sharedSecret) {
         let gcHelloInterval = null;
         let gcHelloAttempts = 0;
         let gcWelcomeReceived = false;
+        let gcRankDataReady = false;
         let steamClient = new User();
 
         let data = {
             prime: false,
             name: null,
             steamid: null,
-            rank: 0,
-            wins: 0,
-            rank_wg: 0,
-            wins_wg: 0,
-            rank_dz: 0,
-            wins_dz: 0,
-            rank_premier: 0,
-            wins_premier: 0,
+            rank: null,
+            wins: null,
+            rank_wg: null,
+            wins_wg: null,
+            rank_dz: null,
+            wins_dz: null,
+            rank_premier: null,
+            wins_premier: null,
             error: null,
             penalty_reason: 0,
             penalty_seconds: 0,
@@ -564,6 +568,16 @@ function check_account(username, pass, sharedSecret) {
             if (gcTimeout) clearTimeout(gcTimeout);
             currently_checking = currently_checking.filter(x => x !== username);
             if (resolveData) {
+                // Convert any remaining null rank fields back to 0 for backward
+                // compatibility with the UI (which expects numbers, not null)
+                if (resolveData.rank == null) resolveData.rank = 0;
+                if (resolveData.wins == null) resolveData.wins = 0;
+                if (resolveData.rank_wg == null) resolveData.rank_wg = 0;
+                if (resolveData.wins_wg == null) resolveData.wins_wg = 0;
+                if (resolveData.rank_dz == null) resolveData.rank_dz = 0;
+                if (resolveData.wins_dz == null) resolveData.wins_dz = 0;
+                if (resolveData.rank_premier == null) resolveData.rank_premier = 0;
+                if (resolveData.wins_premier == null) resolveData.wins_premier = 0;
                 resolve(resolveData);
             }
             try {
@@ -790,9 +804,18 @@ function check_account(username, pass, sharedSecret) {
                         }
                     }
 
-                    // If GC data is already done or we have enough, finish
+                    // If GC rank data is already done, finish immediately.
+                    // Otherwise wait up to 5s for GC rank data before finishing.
                     if (!Done && data.steamid) {
-                        finish(data);
+                        if (gcRankDataReady) {
+                            finish(data);
+                        } else {
+                            setTimeout(function() {
+                                if (!Done && data.steamid) {
+                                    finish(data);
+                                }
+                            }, 5000);
+                        }
                     }
                 } catch (error) {
                     console.error(`[${username}] Error fetching web data:`, error.message);
@@ -1026,9 +1049,10 @@ function check_account(username, pass, sharedSecret) {
                             }
                         }
 
-                        // If we have steamid and rank data, we can finish
-                        if (data.steamid != undefined &&
-                            (data.rank != undefined || data.rank_wg != undefined || data.rank_dz != undefined || data.rank_premier != undefined)) {
+                        // If we have steamid and at least one rank has been set, we can finish
+                        gcRankDataReady = true;
+                        if (data.steamid != null &&
+                            (data.rank != null || data.rank_wg != null || data.rank_dz != null || data.rank_premier != null)) {
                             data.error = null;
                             finish(data);
                         }
