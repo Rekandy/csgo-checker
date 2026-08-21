@@ -734,13 +734,26 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = accountData.cs2_player_level;
                                 }
                                 if (accountData.cs2_player_xp >= 0) {
-                                    data.exp = accountData.cs2_player_xp;
+                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value
+                                    const XP_BASE = 327680000;
+                                    const XP_PER_LEVEL = 5000;
+                                    if (accountData.cs2_player_xp > XP_BASE) {
+                                        let into = accountData.cs2_player_xp - XP_BASE;
+                                        if (into < 0) into = 0;
+                                        data.exp = into % XP_PER_LEVEL;
+                                    } else {
+                                        data.exp = accountData.cs2_player_xp;
+                                    }
                                 }
+
+                                // Final prime determination based on level/xp heuristic
+                                data.prime = (data.lvl > 1) || (data.exp > 0);
 
                                 const account = db.get(username);
                                 if (account) {
                                     if (data.lvl) account.lvl = data.lvl;
                                     if (data.exp) account.exp = data.exp;
+                                    account.prime = data.prime;
                                     db.set(username, account);
                                     if (win) win.webContents.send('accounts:updated', { login: username, data: account });
                                 }
@@ -899,12 +912,12 @@ function check_account(username, pass, sharedSecret) {
                                 switch (cache_object.type_id) {
                                     case 7: {
                                         let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                        if (CSOEconGameAccountClient.elevated_state == 5) {
+                                        if (CSOEconGameAccountClient.elevated_state >= 4) {
                                             data.prime = true;
-                                            console.log(`[${username}] Has Prime status`);
+                                            console.log(`[${username}] Has Prime status (elevated_state=${CSOEconGameAccountClient.elevated_state}, preliminary)`);
                                         } else {
                                             data.prime = false;
-                                            console.log(`[${username}] No Prime status`);
+                                            console.log(`[${username}] No Prime status (elevated_state=${CSOEconGameAccountClient.elevated_state}, preliminary)`);
                                         }
 
                                         sleep(1000).then(function() {
@@ -961,6 +974,9 @@ function check_account(username, pass, sharedSecret) {
                             data.steamid = steamClient.steamID.getSteamID64();
                             data.error = null;
 
+                            // Final prime determination based on level/xp heuristic
+                            data.prime = (data.lvl > 1) || (data.exp > 0);
+
                             // Save prime status
                             let account = db.get(username);
                             if (account) {
@@ -985,8 +1001,15 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = profile.player_level;
                                 }
                                 if (profile.player_cur_xp && profile.player_cur_xp > 0) {
-                                    data.exp = profile.player_cur_xp;
+                                    // Convert raw absolute XP to XP-within-level
+                                    const XP_BASE = 327680000;
+                                    const XP_PER_LEVEL = 5000;
+                                    let into = profile.player_cur_xp - XP_BASE;
+                                    if (into < 0) into = 0;
+                                    data.exp = into % XP_PER_LEVEL;
                                 }
+                                // Final prime determination based on level/xp heuristic
+                                data.prime = (data.lvl > 1) || (data.exp > 0);
                                 // Extract rankings from profile
                                 if (profile.rankings && profile.rankings.length > 0) {
                                     for (let r = 0; r < profile.rankings.length; r++) {
