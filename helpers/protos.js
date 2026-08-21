@@ -4,205 +4,114 @@ const path = require("path");
 
 module.exports = Protos;
 
+/**
+ * Load protobuf definitions and return a map of named proto sets.
+ * @param {Array<{name: string, protos: string[]|string}>} protos - Array of proto sets to load.
+ *   Each entry has a `name` and `protos` which is either an array of file paths or a directory path.
+ * @param {boolean} [ignoreErrors=true] - Whether to suppress load errors.
+ * @returns {Object} Map of {name: {TypeName: protobufjs.Type, ...}}
+ */
 function Protos(protos, ignoreErrors = true) {
 	const protobufs = {};
 
-	for (let proto of protos) {
-		console.log(`Loading proto files for ${proto.name}...`);
-		
-		// Create a new root for each proto set
-		let root = new Protobuf.Root();
-		
-		// Get the list of proto files
-		let files = Array.isArray(proto.protos) ? proto.protos : fs.readdirSync(proto.protos).map(file => path.join(proto.protos, file));
-		console.log(`Found ${files.length} proto files`);
+	// Message types to export from each proto set
+	const messageTypes = [
+		"CMsgClientWelcome",
+		"CSOEconGameAccountClient",
+		"CMsgGCCStrike15_v2_MatchmakingGC2ClientHello",
+		"CMsgGCCStrike15_v2_ClientGCRankUpdate",
+		"CMsgGCCStrike15_v2_PlayersProfile",
+		"CMsgGCCStrike15_v2_ClientRequestPlayersProfile",
+		"PlayerRankingInfo",
+		"PlayerCommendationInfo",
+		"PlayerMedalsInfo",
+		"CMsgClientHello"
+	];
 
-		// Load each proto file individually to avoid duplicate definitions
-		const loadedTypes = {};
-		
-		// Process each file separately
-		for (let file of files) {
-			if (!file.endsWith(".proto") || !fs.existsSync(file)) {
-				console.log(`Skipping file ${file} - not a proto file or doesn't exist`);
+	for (let proto of protos) {
+		// Create a single root for this proto set
+		const root = new Protobuf.Root();
+
+		// Get the list of proto files
+		let files;
+		if (Array.isArray(proto.protos)) {
+			files = proto.protos;
+		} else {
+			// It's a directory path - read all .proto files from it
+			files = fs.readdirSync(proto.protos)
+				.filter(f => f.endsWith(".proto"))
+				.map(f => path.join(proto.protos, f));
+		}
+
+		// Determine the proto include directory from the first file
+		// All proto files should be in the same directory for import resolution
+		let protosDir = null;
+		for (const file of files) {
+			if (file.endsWith(".proto") && fs.existsSync(file)) {
+				protosDir = path.dirname(path.resolve(file));
+				break;
+			}
+		}
+
+		if (!protosDir) {
+			if (!ignoreErrors) {
+				throw new Error(`No valid proto files found for ${proto.name}`);
+			}
+			protobufs[proto.name] = {};
+			continue;
+		}
+
+		// Set up custom import resolution so cross-file imports work
+		root.resolvePath = function (origin, target) {
+			// For google/protobuf imports, let protobufjs handle them with its built-in definitions
+			if (target.startsWith("google/protobuf/")) {
+				return target;
+			}
+			// Resolve all other imports relative to the protos directory
+			return path.resolve(protosDir, target);
+		};
+
+		// Load all proto files into the same root
+		for (const file of files) {
+			if (!file.endsWith(".proto")) {
+				continue;
+			}
+
+			const resolvedFile = path.resolve(file);
+			if (!fs.existsSync(resolvedFile)) {
+				if (!ignoreErrors) {
+					throw new Error(`Proto file not found: ${resolvedFile}`);
+				}
 				continue;
 			}
 
 			try {
-				console.log(`Processing proto file: ${file}`);
-				
-				// Read the file content
-				let content = fs.readFileSync(file, 'utf8');
-				
-				// Make sure the proto file has the necessary options
-				if (!content.includes('option optimize_for = SPEED;')) {
-					console.log(`Adding optimize_for option to ${file}`);
-					let insertPoint = content.indexOf('\n', content.indexOf('import'));
-					if (insertPoint === -1) insertPoint = 0;
-					content = content.slice(0, insertPoint) + '\n\noption optimize_for = SPEED;\noption cc_generic_services = false;' + content.slice(insertPoint);
-				}
-				
-				// Add key_field extension if it's steammessages.proto
-				if (path.basename(file) === "steammessages.proto" && !content.includes('key_field')) {
-					console.log(`Adding key_field extension to ${file}`);
-					let insertPoint = content.indexOf('extend .google.protobuf.FieldOptions {');
-					if (insertPoint !== -1) {
-						let endPoint = content.indexOf('}', insertPoint);
-						if (endPoint !== -1) {
-							content = content.slice(0, endPoint) + '\n\toptional bool key_field = 50000 [default = false];' + content.slice(endPoint);
-						}
-					}
-				}
-				
-				// Create a temporary file with the modified content
-				let tempFile = file + '.temp';
-				fs.writeFileSync(tempFile, content);
-				
-				// Create a separate root for each file to avoid conflicts
-				let fileRoot = new Protobuf.Root();
-				try {
-					fileRoot = fileRoot.loadSync(tempFile, {
-						keepCase: true,
-						alternateCommentMode: true
-					});
-					
-					// Extract all message types from this file
-					const nestedTypes = fileRoot.nested || {};
-					Object.keys(nestedTypes).forEach(typeName => {
-						if (!loadedTypes[typeName]) {
-							loadedTypes[typeName] = nestedTypes[typeName];
-						}
-					});
-					
-					console.log(`Successfully processed proto file: ${file}`);
-				} catch (loadErr) {
-					console.error(`Error loading proto file ${file} into separate root:`, loadErr);
-				}
-				
-				// Remove the temporary file
-				try {
-					fs.unlinkSync(tempFile);
-				} catch (unlinkErr) {
-					console.error(`Error removing temporary file ${tempFile}:`, unlinkErr);
-				}
+				root.loadSync(resolvedFile, {
+					keepCase: true,
+					alternateCommentMode: true
+				});
 			} catch (err) {
-				console.error(`Error processing proto file ${file}:`, err);
 				if (!ignoreErrors) {
 					throw err;
 				}
+				console.error(`Error loading proto file ${resolvedFile}: ${err.message}`);
 			}
 		}
 
-		// Now create a simplified version of the proto definitions
-		// that only includes what we need for CS2
-		const simplifiedRoot = new Protobuf.Root();
-		
-		// Add essential message types for CS2
-		const essentialTypes = [
-			'CMsgClientWelcome',
-			'CSOEconGameAccountClient',
-			'CMsgGCCStrike15_v2_MatchmakingGC2ClientHello',
-			'CMsgGCCStrike15_v2_ClientGCRankUpdate'
-		];
-		
-		// Create a simplified proto file with just what we need
-		let simplifiedProto = `
-		option optimize_for = SPEED;
-		option cc_generic_services = false;
-		
-		extend .google.protobuf.FieldOptions {
-			optional bool key_field = 50000 [default = false];
-		}
-		
-		// Essential message types for CS2
-		message CMsgClientWelcome {
-			repeated .CMsgClientWelcome.OutOfDateSubscribedCache outofdate_subscribed_caches = 3;
-			
-			message OutOfDateSubscribedCache {
-				repeated .CMsgClientWelcome.OutOfDateSubscribedCache.CacheObject objects = 2;
-				
-				message CacheObject {
-					optional uint32 type_id = 1;
-					repeated bytes object_data = 2;
+		// Build the type map for this proto set
+		const typeMap = {};
+		for (const typeName of messageTypes) {
+			try {
+				typeMap[typeName] = root.lookupType(typeName);
+			} catch (err) {
+				// Type may not exist in this particular set of proto files
+				if (!ignoreErrors) {
+					throw new Error(`Failed to look up type ${typeName}: ${err.message}`);
 				}
 			}
 		}
-		
-		message CSOEconGameAccountClient {
-			optional uint32 additional_backpack_slots = 1 [default = 0];
-			optional fixed32 bonus_xp_timestamp_refresh = 12;
-			optional uint32 bonus_xp_usedflags = 13;
-			optional uint32 elevated_state = 14;
-			optional uint32 elevated_timestamp = 15;
-		}
-		
-		message CMsgGCCStrike15_v2_MatchmakingGC2ClientHello {
-			optional uint32 account_id = 1;
-			optional uint32 penalty_reason = 2;
-			optional uint32 penalty_seconds = 3;
-			optional uint32 vac_banned = 6;
-			optional .PlayerRankingInfo ranking = 7;
-			optional .PlayerCommendationInfo commendation = 8;
-			optional .PlayerMedalsInfo medals = 9;
-			optional uint32 player_level = 11;
-		}
-		
-		message PlayerRankingInfo {
-			optional uint32 account_id = 1;
-			optional uint32 rank_id = 2;
-			optional uint32 wins = 3;
-			optional float rank_change = 4;
-			optional uint32 rank_type_id = 6;
-		}
-		
-		message PlayerCommendationInfo {
-			optional uint32 cmd_friendly = 1;
-			optional uint32 cmd_teaching = 2;
-			optional uint32 cmd_leader = 4;
-		}
-		
-		message PlayerMedalsInfo {
-			repeated uint32 display_items_defidx = 7;
-			optional uint32 featured_display_item_defidx = 8;
-		}
-		
-		message CMsgGCCStrike15_v2_ClientGCRankUpdate {
-			repeated .PlayerRankingInfo rankings = 1;
-		}
-		`;
-		
-		// Create a temporary file with the simplified proto
-		let simplifiedFile = path.join(path.dirname(files[0]), 'simplified.proto.temp');
-		fs.writeFileSync(simplifiedFile, simplifiedProto);
-		
-		// Load the simplified proto
-		try {
-			root = root.loadSync(simplifiedFile, {
-				keepCase: true,
-				alternateCommentMode: true
-			});
-			console.log('Successfully loaded simplified proto definitions');
-		} catch (err) {
-			console.error('Error loading simplified proto definitions:', err);
-			if (!ignoreErrors) {
-				throw err;
-			}
-		}
-		
-		// Clean up
-		try {
-			fs.unlinkSync(simplifiedFile);
-		} catch (err) {
-			console.error(`Error removing temporary file ${simplifiedFile}:`, err);
-		}
 
-		// Verify that the root has been populated correctly
-		if (Object.keys(root.nested || {}).length === 0) {
-			console.warn(`Warning: No message types found in proto files for ${proto.name}`);
-		} else {
-			console.log(`Successfully loaded ${Object.keys(root.nested || {}).length} message types for ${proto.name}`);
-		}
-
-		protobufs[proto.name] = root;
+		protobufs[proto.name] = typeMap;
 	}
 
 	return protobufs;
