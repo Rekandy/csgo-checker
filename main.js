@@ -939,10 +939,14 @@ function check_account(username, pass, sharedSecret) {
                             steamClient.sendToGC(appid, GC_MSG.RequestPlayersProfile, {}, profileReqMsg);
                         }
 
+                        if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
+                            console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
+                            break;
+                        }
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
 
                         ++attempts;
-                        if (msg.ranking === null && attempts < 5 && !msg.vac_banned) {
+                        if (!msg.ranking && attempts < 5 && !msg.vac_banned) {
                             sleep(2000).then(function() {
                                 if (Done) return;
                                 steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
@@ -1014,6 +1018,10 @@ function check_account(username, pass, sharedSecret) {
                     }
                     case GC_MSG.ClientGCRankUpdate: {
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
+                        if (!msg.rankings || !Array.isArray(msg.rankings)) {
+                            gcRankDataReady = true;
+                            break;
+                        }
                         for (const ranking of msg.rankings) {
                             if (ranking.rank_type_id == 6) { // competitive
                                 data.wins = ranking.wins;
