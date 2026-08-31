@@ -472,11 +472,44 @@ function looksLikeErrorPage(html) {
          containsCI(html, 'error_box_top');
 }
 
+/**
+ * Extract per-map "Ranked Competitive" stats from a GCPD matchmaking page.
+ *
+ * The main parser does not cover per-map data, so this uses the same regex
+ * shape the main process previously ran inline. Returns a map keyed by the
+ * (trimmed) map name; an empty object when no rows are present. Behavior is
+ * byte-identical to the original inline extraction.
+ * @param {string} html - Raw GCPD matchmaking HTML
+ * @returns {Object<string, {wins:number, ties:number, losses:number, skill_group:(string|null), last_match:string, region:number}>}
+ */
+function extractCompetitiveMaps(html) {
+  const mapsData = {};
+  if (!html) return mapsData;
+  const mapRows = html.match(/<tr>[\s\S]*?<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<\/tr>/g);
+  if (mapRows) {
+    mapRows.forEach(function(row) {
+      const mapMatch = /<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>/.exec(row);
+      if (mapMatch) {
+        mapsData[mapMatch[1].trim()] = {
+          wins: parseInt(mapMatch[2], 10),
+          ties: parseInt(mapMatch[3], 10),
+          losses: parseInt(mapMatch[4], 10),
+          skill_group: mapMatch[5].trim() || null,
+          last_match: mapMatch[6],
+          region: parseInt(mapMatch[7], 10)
+        };
+      }
+    });
+  }
+  return mapsData;
+}
+
 module.exports = {
   parseMatchmaking,
   parseAccountMain,
   looksLikeGcpdPage,
   looksLikeLoginPage,
   looksLikeErrorPage,
+  extractCompetitiveMaps,
   COOLDOWN_NEVER
 };

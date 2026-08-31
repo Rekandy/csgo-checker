@@ -8,6 +8,7 @@ const {
     looksLikeGcpdPage,
     looksLikeLoginPage,
     looksLikeErrorPage,
+    extractCompetitiveMaps,
     COOLDOWN_NEVER
 } = require('../helpers/gcpd_parser.js');
 
@@ -263,4 +264,63 @@ test('ambiguous matchmaking header (no Skill/Wins) -> skipped, no fabricated dat
     const res = parseMatchmaking(wrap(mm));
     assert.strictEqual(res.premier_rating, 0);
     assert.strictEqual(res.premier_wins, 0);
+});
+
+// --- extractCompetitiveMaps -------------------------------------------------
+
+/**
+ * Build a single "Ranked Competitive" map row matching the regex shape the
+ * main process consumes (map name, wins, ties, losses, skill group, last
+ * match timestamp, region).
+ */
+function mapRow(name, wins, ties, losses, skill, ts, region) {
+    return `<tr>` +
+        `<td>Ranked Competitive</td>` +
+        `<td>${name}</td>` +
+        `<td>${wins}</td>` +
+        `<td>${ties}</td>` +
+        `<td>${losses}</td>` +
+        `<td>${skill}</td>` +
+        `<td>${ts}</td>` +
+        `<td>${region}</td>` +
+        `</tr>`;
+}
+
+test('extractCompetitiveMaps returns {} for empty or missing html', () => {
+    assert.deepStrictEqual(extractCompetitiveMaps(''), {});
+    assert.deepStrictEqual(extractCompetitiveMaps(null), {});
+    assert.deepStrictEqual(extractCompetitiveMaps('<html>no rows here</html>'), {});
+});
+
+test('extractCompetitiveMaps parses a single map row into numeric stats', () => {
+    const html = mapRow('Mirage', '10', '1', '4', 'Legendary Eagle', '2024-01-02 03:04:05 GMT', '9');
+    const res = extractCompetitiveMaps(html);
+    assert.deepStrictEqual(res, {
+        Mirage: {
+            wins: 10,
+            ties: 1,
+            losses: 4,
+            skill_group: 'Legendary Eagle',
+            last_match: '2024-01-02 03:04:05 GMT',
+            region: 9
+        }
+    });
+});
+
+test('extractCompetitiveMaps trims names and maps empty skill group to null', () => {
+    const html = mapRow('  Inferno  ', '3', '0', '2', '', '2024-05-06 07:08:09 GMT', '0');
+    const res = extractCompetitiveMaps(html);
+    assert.strictEqual(res.Inferno.skill_group, null);
+    assert.strictEqual(res.Inferno.wins, 3);
+    assert.strictEqual(res.Inferno.region, 0);
+});
+
+test('extractCompetitiveMaps parses multiple rows', () => {
+    const html =
+        mapRow('Mirage', '10', '1', '4', 'LE', '2024-01-02 03:04:05 GMT', '9') +
+        mapRow('Nuke', '2', '0', '1', 'MG', '2024-02-03 04:05:06 GMT', '1');
+    const res = extractCompetitiveMaps(html);
+    assert.strictEqual(Object.keys(res).length, 2);
+    assert.strictEqual(res.Mirage.wins, 10);
+    assert.strictEqual(res.Nuke.losses, 1);
 });
