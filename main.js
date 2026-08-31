@@ -16,6 +16,7 @@ const logger = require('./helpers/logger.js');
 const { parseAccountLines } = require('./helpers/importParser.js');
 const { TaskQueue } = require('./helpers/queue.js');
 const { STATUS, statusFromEresult, shouldRetry, backoffDelay } = require('./helpers/checker.js');
+const { xpIntoLevel, xpModuloLevel } = require('./helpers/xp.js');
 // Исправление загрузки proto-файлов
 let Protos;
 try {
@@ -1045,18 +1046,9 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = accountData.cs2_player_level;
                                 }
                                 if (accountData.cs2_player_xp >= 0) {
-                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value.
-                                    // 327680000 is the intentional CS2 XP base constant (well below
-                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
-                                    const XP_BASE = 327680000;
-                                    const XP_PER_LEVEL = 5000;
-                                    if (accountData.cs2_player_xp > XP_BASE) {
-                                        let into = accountData.cs2_player_xp - XP_BASE;
-                                        if (into < 0) into = 0;
-                                        data.exp = into % XP_PER_LEVEL;
-                                    } else {
-                                        data.exp = accountData.cs2_player_xp;
-                                    }
+                                    // Convert raw absolute XP to XP-within-level if it looks
+                                    // like a raw value; leave in-level values unchanged.
+                                    data.exp = xpIntoLevel(accountData.cs2_player_xp);
                                 }
 
                                 // Final prime determination based on level/xp heuristic
@@ -1351,14 +1343,10 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = profile.player_level;
                                 }
                                 if (profile.player_cur_xp && profile.player_cur_xp > 0) {
-                                    // Convert raw absolute XP to XP-within-level.
-                                    // 327680000 is the intentional CS2 XP base constant (well below
-                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
-                                    const XP_BASE = 327680000;
-                                    const XP_PER_LEVEL = 5000;
-                                    let into = profile.player_cur_xp - XP_BASE;
-                                    if (into < 0) into = 0;
-                                    data.exp = into % XP_PER_LEVEL;
+                                    // Convert raw absolute XP to XP-within-level. This path
+                                    // always subtracts the base (no guard), matching the
+                                    // original PlayersProfile behavior.
+                                    data.exp = xpModuloLevel(profile.player_cur_xp);
                                 }
                                 // Final prime determination based on level/xp heuristic
                                 data.prime = (data.lvl > 1) || (data.exp > 0);
