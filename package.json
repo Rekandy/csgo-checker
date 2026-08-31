@@ -1,7 +1,7 @@
 {
   "name": "csgo-checker",
   "version": "1.4.4",
-  "description": "Check CS:GO accounts for bans/cooldowns/wins/ranks",
+  "description": "Check CS2 (Counter-Strike 2, formerly CS:GO) accounts for bans/cooldowns/wins/ranks/Premier/level",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -10,6 +10,7 @@
     "build": "electron-builder --win --linux",
     "build:windows": "electron-builder --win",
     "build:linux": "electron-builder --linux",
+    "package": "electron-builder --dir",
     "publish": "electron-builder --win --linux --publish always"
   },
   "author": "dumbasPL",
