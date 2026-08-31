@@ -1,4 +1,4 @@
-# CS2 account checker <img width="100" align="right" alt="icon" src="https://github.com/dumbasPL/csgo-checker/raw/master/build/icon.ico" /> 
+# CS2 account checker <img width="100" align="right" alt="icon" src="https://github.com/dumbasPL/csgo-checker/raw/master/build/icon.ico" />
 
 > [!NOTE]  
 > Updated for **CS2** (Counter-Strike 2, formerly CS:GO). The Game Coordinator
@@ -8,28 +8,30 @@
 [![Github All Releases](https://img.shields.io/github/downloads/dumbasPL/csgo-checker/total.svg?style=for-the-badge)](https://github.com/dumbasPL/csgo-checker/releases/latest)
 
 ## Checks CS2 accounts for:
- - bans (vac/overwatch/untrusted)
- - cooldowns (abandon, team damage, etc)
- - matchmaking rank/wins/rank expiration time (competitive, wingman and dangerzone)
- - Premier rating
- - CS2 profile level/XP
- - prime status
- - steam profile name
+
+- bans (vac/overwatch/untrusted)
+- cooldowns (abandon, team damage, etc)
+- matchmaking rank/wins/rank expiration time (competitive, wingman and dangerzone)
+- Premier rating
+- CS2 profile level/XP
+- prime status
+- steam profile name
 
 Fields that are unknown or unavailable are shown as `N/A`/`Unranked` rather than
 stale CS:GO values.
 
 ## Additional features:
- - import/export form/to `user:pass` combo file
- - steam guard mobile authenticator shared secrets supported
- - mass refresh
- - copy password to clipboard
- - copy CS2 friend code to clipboard
- - copy mobile steam 2fa code to clipboard (requires shared secret to be set)
- - search bar
- - tags
- - sorting
- - steam guard protected accounts supported
+
+- import/export form/to `user:pass` combo file
+- steam guard mobile authenticator shared secrets supported
+- mass refresh
+- copy password to clipboard
+- copy CS2 friend code to clipboard
+- copy mobile steam 2fa code to clipboard (requires shared secret to be set)
+- search bar
+- tags
+- sorting
+- steam guard protected accounts supported
 
 ## Development
 
