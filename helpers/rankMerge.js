@@ -54,51 +54,64 @@
  */
 function mergeGcpdMatchmaking(data, mmData) {
   if (!data || !mmData || !mmData.ok) return data;
-
-  // --- Premier -------------------------------------------------------------
-  if (mmData.premier_present && data.rank_premier !== -1) {
-    if (mmData.premier_rating > 0) {
-      data.rank_premier = mmData.premier_rating;
-    } else if (mmData.premier_wins >= 10) {
-      // Present row, rating 0 but >= 10 prior wins -> expired.
-      //
-      // The >= 10 threshold intentionally matches the renderer's expired gate
-      // for mm/wg/dz (`rank == 0 && wins >= 10`). Premier is the one mode whose
-      // expired state is a dedicated sentinel (-1) computed here rather than by
-      // the renderer, so it must use the SAME wins threshold as the other modes
-      // - otherwise a premier account with 1-9 wins and rating 0 would render
-      // "Expired" while the equivalent wingman renders "Unranked". Anything
-      // below 10 wins is treated as never-ranked/unranked (rating stays 0),
-      // which also prevents a never-ranked premier (GC-set 0) with a stray low
-      // GCPD wins count from being flipped to expired.
-      //
-      // Do not overwrite a real active rating GC may already have set.
-      if (data.rank_premier == null || data.rank_premier <= 0) {
-        data.rank_premier = -1;
-      }
-    }
-    if (mmData.premier_wins > 0) {
-      data.wins_premier = mmData.premier_wins;
-    }
-  }
-
-  // --- Wingman -------------------------------------------------------------
-  if (mmData.wingman_present && data.rank_wg !== -1) {
-    if (mmData.wingman_rank > 0) {
-      data.rank_wg = mmData.wingman_rank;
-    } else if (mmData.wingman_wins > 0) {
-      // Expired: keep rank 0 so the renderer's `rank == 0 && wins >= 10`
-      // expired check fires. Only set 0 when GC has not provided a real rank.
-      if (data.rank_wg == null || data.rank_wg <= 0) {
-        data.rank_wg = 0;
-      }
-    }
-    if (mmData.wingman_wins > 0) {
-      data.wins_wg = mmData.wingman_wins;
-    }
-  }
-
+  mergeGcpdPremier(data, mmData);
+  mergeGcpdWingman(data, mmData);
   return data;
+}
+
+/**
+ * Merge the premier section of a GCPD parse into `data`. Only runs when GCPD
+ * has a present premier row and premier is not already a VAC/ban sentinel.
+ * @param {object} data - account data object (mutated in place)
+ * @param {object} mmData - result of parseMatchmaking()
+ */
+function mergeGcpdPremier(data, mmData) {
+  if (!mmData.premier_present || data.rank_premier === -1) return;
+  if (mmData.premier_rating > 0) {
+    data.rank_premier = mmData.premier_rating;
+  } else if (mmData.premier_wins >= 10) {
+    // Present row, rating 0 but >= 10 prior wins -> expired.
+    //
+    // The >= 10 threshold intentionally matches the renderer's expired gate
+    // for mm/wg/dz (`rank == 0 && wins >= 10`). Premier is the one mode whose
+    // expired state is a dedicated sentinel (-1) computed here rather than by
+    // the renderer, so it must use the SAME wins threshold as the other modes
+    // - otherwise a premier account with 1-9 wins and rating 0 would render
+    // "Expired" while the equivalent wingman renders "Unranked". Anything
+    // below 10 wins is treated as never-ranked/unranked (rating stays 0),
+    // which also prevents a never-ranked premier (GC-set 0) with a stray low
+    // GCPD wins count from being flipped to expired.
+    //
+    // Do not overwrite a real active rating GC may already have set.
+    if (data.rank_premier == null || data.rank_premier <= 0) {
+      data.rank_premier = -1;
+    }
+  }
+  if (mmData.premier_wins > 0) {
+    data.wins_premier = mmData.premier_wins;
+  }
+}
+
+/**
+ * Merge the wingman section of a GCPD parse into `data`. Only runs when GCPD
+ * has a present wingman row and wingman is not already a VAC/ban sentinel.
+ * @param {object} data - account data object (mutated in place)
+ * @param {object} mmData - result of parseMatchmaking()
+ */
+function mergeGcpdWingman(data, mmData) {
+  if (!mmData.wingman_present || data.rank_wg === -1) return;
+  if (mmData.wingman_rank > 0) {
+    data.rank_wg = mmData.wingman_rank;
+  } else if (mmData.wingman_wins > 0) {
+    // Expired: keep rank 0 so the renderer's `rank == 0 && wins >= 10`
+    // expired check fires. Only set 0 when GC has not provided a real rank.
+    if (data.rank_wg == null || data.rank_wg <= 0) {
+      data.rank_wg = 0;
+    }
+  }
+  if (mmData.wingman_wins > 0) {
+    data.wins_wg = mmData.wingman_wins;
+  }
 }
 
 /**
@@ -139,22 +152,35 @@ function applyGcRanking(data, ranking) {
       cascadeVac(data);
       break;
     case 7: // wingman
-      if (data.rank_wg !== -1) { data.rank_wg = rankId; data.wins_wg = rankWins; }
-      if (isCompetitiveVac(data)) { data.rank_wg = -1; data.wins_wg = -1; }
+      applySecondaryMode(data, 'rank_wg', 'wins_wg', rankId, rankWins);
       break;
     case 10: // dangerzone
-      if (data.rank_dz !== -1) { data.rank_dz = rankId; data.wins_dz = rankWins; }
-      if (isCompetitiveVac(data)) { data.rank_dz = -1; data.wins_dz = -1; }
+      applySecondaryMode(data, 'rank_dz', 'wins_dz', rankId, rankWins);
       break;
     case 11: // premier
       // Premier expired sentinel is -1; do not clobber it. rank_id 0 means
       // unranked/none here (the expired mapping comes from the GCPD path,
       // which has the wins signal to distinguish expired from never-ranked).
-      if (data.rank_premier !== -1) { data.rank_premier = rankId; data.wins_premier = rankWins; }
-      if (isCompetitiveVac(data)) { data.rank_premier = -1; data.wins_premier = -1; }
+      applySecondaryMode(data, 'rank_premier', 'wins_premier', rankId, rankWins);
       break;
   }
   return data;
+}
+
+/**
+ * Apply a secondary-mode (wingman/dz/premier) ranking entry: write the incoming
+ * rank/wins unless the mode already carries a VAC/ban sentinel (-1), then apply
+ * the competitive-VAC cascade so a banned competitive forces the secondary mode
+ * to the sentinel. Identical logic for all three secondary modes.
+ * @param {object} data - account data object (mutated in place)
+ * @param {string} rankKey - property name for the mode's rank (e.g. 'rank_wg')
+ * @param {string} winsKey - property name for the mode's wins (e.g. 'wins_wg')
+ * @param {number} rankId - incoming rank id
+ * @param {number} rankWins - incoming wins
+ */
+function applySecondaryMode(data, rankKey, winsKey, rankId, rankWins) {
+  if (data[rankKey] !== -1) { data[rankKey] = rankId; data[winsKey] = rankWins; }
+  if (isCompetitiveVac(data)) { data[rankKey] = -1; data[winsKey] = -1; }
 }
 
 /**

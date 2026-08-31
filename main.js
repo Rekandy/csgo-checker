@@ -191,6 +191,83 @@ function beforeWindowInputHandler(window, event, input) {
     }
 }
 
+/**
+ * Show the password prompt window and resolve with the entered password.
+ * Preserves the original behavior: quits the app if the window is closed
+ * without a response, and passes the last error message to the dialog.
+ * @param {string|null} error_message previous error to display, if any
+ * @returns {Promise<string>}
+ */
+function promptForPassword(error_message) {
+    return new Promise((resolve, reject) => {
+        passwordPromptResponse = null;
+        let promptWindow = new BrowserWindow({
+            ...browserWindowOptions,
+            width: 500,
+            height: 280,
+            resizable: false,
+            show: false
+        });
+        promptWindow.removeMenu();
+        applyNavigationGuards(promptWindow.webContents);
+        promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
+            promptWindow.webContents.send('password_dialog:init', error_message);
+        })
+        promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
+        promptWindow.once('ready-to-show', () => promptWindow.show())
+        promptWindow.on('closed', () => {
+            if (passwordPromptResponse == null) {
+                return app.quit();
+            }
+            resolve(passwordPromptResponse);
+            promptWindow = null;
+        })
+        promptWindow.webContents.on('render-process-gone', (event, detailed) => {
+          console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
+        });
+    });
+}
+
+/**
+ * Open the encrypted account DB with the given password, resolving once it is
+ * loaded and rejecting on any (sync or async) decryption error.
+ * @param {string} pass
+ * @returns {Promise<EncryptedStorage>}
+ */
+function openEncryptedDb(pass) {
+    return new Promise((res, rej) => {
+        try {
+            let db = new EncryptedStorage(ACCOUNTS_ENCRYPTED_PATH, pass);
+            db.on('error', rej);//this is for async errors
+            db.on('loaded', () => res(db));
+        } catch (error) {
+            rej(error);
+        }
+    });
+}
+
+/**
+ * Normalize a decrypt/open error into the human-readable string the password
+ * dialog displays, preserving the original mapping (BAD_DECRYPT -> "Invalid
+ * password", error.code, else stringified). String errors pass through.
+ * @param {*} error
+ * @returns {string}
+ */
+function normalizeDecryptError(error) {
+    if (typeof error != 'string') {
+        if (error.reason == 'BAD_DECRYPT') {
+            return 'Invalid password';
+        }
+        else if (error.code) {
+            return error.code;
+        }
+        else {
+            return error.toString();
+        }
+    }
+    return error;
+}
+
 async function openDB() {
     try {
         if (db) {
@@ -200,61 +277,16 @@ async function openDB() {
         if (settings.get('encrypted')) {
             let error_message = null;
             while (true) {
-                let pass = await new Promise((resolve, reject) => {
-                    passwordPromptResponse = null;
-                    let promptWindow = new BrowserWindow({
-                        ...browserWindowOptions,
-                        width: 500,
-                        height: 280,
-                        resizable: false,
-                        show: false
-                    });
-                    promptWindow.removeMenu();
-                    applyNavigationGuards(promptWindow.webContents);
-                    promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
-                        promptWindow.webContents.send('password_dialog:init', error_message);
-                    })
-                    promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
-                    promptWindow.once('ready-to-show', () => promptWindow.show())
-                    promptWindow.on('closed', () => {
-                        if (passwordPromptResponse == null) {
-                            return app.quit();
-                        }
-                        resolve(passwordPromptResponse);
-                        promptWindow = null;
-                    })
-                    promptWindow.webContents.on('render-process-gone', (event, detailed) => {
-                      console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
-                    });
-                });
+                let pass = await promptForPassword(error_message);
                 try {
                     if (pass == null || pass.length == 0) {
                         throw 'Password can not be empty';
                     }
-                    db = await new Promise((res, rej) => {
-                        try {
-                            let db = new EncryptedStorage(ACCOUNTS_ENCRYPTED_PATH, pass);
-                            db.on('error', rej);//this is for async errors
-                            db.on('loaded', () => res(db));
-                        } catch (error) {
-                            rej(error);
-                        }
-                    })
+                    db = await openEncryptedDb(pass);
                     //we decrypted successfully, exit loop
                     break;
                 } catch (error) {
-                    if (typeof error != 'string') {
-                        if (error.reason == 'BAD_DECRYPT') {
-                            error = 'Invalid password';
-                        }
-                        else if (error.code) {
-                            error = error.code;
-                        }
-                        else {
-                            error = error.toString();
-                        }
-                    }
-                    error_message = error;
+                    error_message = normalizeDecryptError(error);
                 }
             }
             return;
@@ -538,6 +570,49 @@ ipcMain.handle('accounts:get', () => {
     return data;
 });
 
+// Human-readable strings for the steam-user login error eresults we recognize.
+// eresults 6 and 34 both map to "Logged In Elsewhere".
+const LOGIN_ERROR_STRINGS = {
+    2: 'General Failure',
+    5: 'Invalid Password',
+    6: 'Logged In Elsewhere',
+    34: 'Logged In Elsewhere',
+    18: 'Expired',
+    65: 'steam guard is invalid',
+    84: 'Rate Limit Exceeded'
+};
+
+/**
+ * Map a steam-user login error eresult to a human-readable string, preserving
+ * the exact wording (and the Unknown fallback) of the original switch.
+ * @param {number} eresult
+ * @returns {string}
+ */
+function loginErrorString(eresult) {
+    return LOGIN_ERROR_STRINGS[eresult] ?? `Unknown: ${eresult}`;
+}
+
+// Rank/wins fields normalized from null back to 0 on finish for UI backward
+// compatibility (the renderer expects numbers, not null).
+const RANK_NULLABLE_FIELDS = [
+    'rank', 'wins',
+    'rank_wg', 'wins_wg',
+    'rank_dz', 'wins_dz',
+    'rank_premier', 'wins_premier'
+];
+
+/**
+ * Convert any null/undefined rank/wins fields on a resolved data object back to
+ * 0, in place. Uses `== null` so only null/undefined (not a legitimate 0 or the
+ * -1 VAC/expired sentinel) are replaced.
+ * @param {object} resolveData
+ */
+function normalizeRankNulls(resolveData) {
+    for (const field of RANK_NULLABLE_FIELDS) {
+        if (resolveData[field] == null) resolveData[field] = 0;
+    }
+}
+
 /**
  * Derive a STATUS from a check_account rejection. The rejection carries an
  * `eresult` when it originated from a steam-user login error; otherwise it is a
@@ -787,14 +862,7 @@ function check_account(username, pass, sharedSecret) {
             if (resolveData) {
                 // Convert any remaining null rank fields back to 0 for backward
                 // compatibility with the UI (which expects numbers, not null)
-                if (resolveData.rank == null) resolveData.rank = 0;
-                if (resolveData.wins == null) resolveData.wins = 0;
-                if (resolveData.rank_wg == null) resolveData.rank_wg = 0;
-                if (resolveData.wins_wg == null) resolveData.wins_wg = 0;
-                if (resolveData.rank_dz == null) resolveData.rank_dz = 0;
-                if (resolveData.wins_dz == null) resolveData.wins_dz = 0;
-                if (resolveData.rank_premier == null) resolveData.rank_premier = 0;
-                if (resolveData.wins_premier == null) resolveData.wins_premier = 0;
+                normalizeRankNulls(resolveData);
                 resolve(resolveData);
             }
             try {
@@ -831,17 +899,7 @@ function check_account(username, pass, sharedSecret) {
         });
 
         steamClient.on('error', (e) => {
-            let errorStr = '';
-            switch (e.eresult) {
-                case 2:  errorStr = `General Failure`;          break;
-                case 5:  errorStr = `Invalid Password`;         break;
-                case 6:
-                case 34: errorStr = `Logged In Elsewhere`;      break;
-                case 18: errorStr = `Expired`;                  break;
-                case 65: errorStr = `steam guard is invalid`;   break;
-                case 84: errorStr = `Rate Limit Exceeded`;      break;
-                default: errorStr = `Unknown: ${e.eresult}`;    break;
-            }
+            const errorStr = loginErrorString(e.eresult);
             console.log(`[${username}] Login error: ${errorStr} (eresult=${e.eresult})`);
             // A Steam-Guard-invalid result (eresult 65) on the shared-secret
             // TOTP path is the classic symptom of a stale cached time offset:
@@ -954,10 +1012,9 @@ function check_account(username, pass, sharedSecret) {
                     return null;
                 }
 
-                try {
-                    // Sequential requests with 1s delay between each to avoid rate limiting
-
-                    // 1. Profile page (for name)
+                // 1. Profile page (for name). Fetches the community profile and
+                // stores the persona name. Closes over the check scope.
+                async function fetchProfileName() {
                     const profileHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}`);
                     if (profileHtml) {
                         const nameMatch = /class="[^"]*persona_name_text_content[^"]*"[^>]*>([^<]+)</.exec(profileHtml);
@@ -971,24 +1028,26 @@ function check_account(username, pass, sharedSecret) {
                             }
                         }
                     }
+                }
 
-                    await sleep(1000);
-
-                    // 2. Account main page (for level and XP)
+                // 2. Account main page (for level and XP).
+                async function fetchAccountMain() {
                     const accountMainHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=accountmain`);
-                    if (accountMainHtml) {
-                        if (looksLikeLoginPage(accountMainHtml)) {
-                            logger.warn('GCPD accountmain returned login page, skipping', { account: username });
-                        } else if (looksLikeErrorPage(accountMainHtml)) {
-                            logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
-                        } else if (looksLikeGcpdPage(accountMainHtml)) {
+                    if (!accountMainHtml) return;
+                    if (looksLikeLoginPage(accountMainHtml)) {
+                        logger.warn('GCPD accountmain returned login page, skipping', { account: username });
+                    } else if (looksLikeErrorPage(accountMainHtml)) {
+                        logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
+                    } else if (looksLikeGcpdPage(accountMainHtml)) {
                             const accountData = parseAccountMain(accountMainHtml);
                             if (accountData.ok) {
                                 if (accountData.cs2_player_level >= 0) {
                                     data.lvl = accountData.cs2_player_level;
                                 }
                                 if (accountData.cs2_player_xp >= 0) {
-                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value
+                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value.
+                                    // 327680000 is the intentional CS2 XP base constant (well below
+                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
                                     const XP_BASE = 327680000;
                                     const XP_PER_LEVEL = 5000;
                                     if (accountData.cs2_player_xp > XP_BASE) {
@@ -1012,21 +1071,20 @@ function check_account(username, pass, sharedSecret) {
                                     if (win) win.webContents.send('accounts:updated', { login: username, data: account });
                                 }
                             }
-                        } else {
-                            logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
-                        }
+                    } else {
+                        logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
                     }
+                }
 
-                    await sleep(1000);
-
-                    // 3. Matchmaking page (for ranks, wins, cooldowns, maps)
+                // 3. Matchmaking page (for ranks, wins, cooldowns, maps).
+                async function fetchMatchmaking() {
                     const matchmakingHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=matchmaking`);
-                    if (matchmakingHtml) {
-                        if (looksLikeLoginPage(matchmakingHtml)) {
-                            logger.warn('GCPD matchmaking returned login page, skipping', { account: username });
-                        } else if (looksLikeErrorPage(matchmakingHtml)) {
-                            logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
-                        } else if (looksLikeGcpdPage(matchmakingHtml)) {
+                    if (!matchmakingHtml) return;
+                    if (looksLikeLoginPage(matchmakingHtml)) {
+                        logger.warn('GCPD matchmaking returned login page, skipping', { account: username });
+                    } else if (looksLikeErrorPage(matchmakingHtml)) {
+                        logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
+                    } else if (looksLikeGcpdPage(matchmakingHtml)) {
                             const mmData = parseMatchmaking(matchmakingHtml);
                             if (mmData.ok) {
                                 // GCPD is a GAP-FILLER for ranks: the GC handlers
@@ -1055,12 +1113,12 @@ function check_account(username, pass, sharedSecret) {
                                     const mapMatch = /<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>/.exec(row);
                                     if (mapMatch) {
                                         mapsData[mapMatch[1].trim()] = {
-                                            wins: parseInt(mapMatch[2]),
-                                            ties: parseInt(mapMatch[3]),
-                                            losses: parseInt(mapMatch[4]),
+                                            wins: parseInt(mapMatch[2], 10),
+                                            ties: parseInt(mapMatch[3], 10),
+                                            losses: parseInt(mapMatch[4], 10),
                                             skill_group: mapMatch[5].trim() || null,
                                             last_match: mapMatch[6],
-                                            region: parseInt(mapMatch[7])
+                                            region: parseInt(mapMatch[7], 10)
                                         };
                                     }
                                 });
@@ -1072,10 +1130,18 @@ function check_account(username, pass, sharedSecret) {
                             if (lastGameMatch) {
                                 data.last_game = new Date(lastGameMatch[1]);
                             }
-                        } else {
-                            logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
-                        }
+                    } else {
+                        logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
                     }
+                }
+
+                try {
+                    // Sequential requests with 1s delay between each to avoid rate limiting
+                    await fetchProfileName();
+                    await sleep(1000);
+                    await fetchAccountMain();
+                    await sleep(1000);
+                    await fetchMatchmaking();
 
                     // If GC rank data is already done, finish immediately.
                     // Otherwise wait up to 5s for GC rank data before finishing.
@@ -1148,60 +1214,68 @@ function check_account(username, pass, sharedSecret) {
 
         steamClient.on('receivedFromGC', function(appid, msgType, payload) {
             console.log(`[${username}] receivedFromGC msgType=${msgType}`);
-            try {
-                switch (msgType) {
-                    case GC_MSG.ClientWelcome: {
-                        gcWelcomeReceived = true;
-                        if (gcHelloInterval) {
-                            clearInterval(gcHelloInterval);
-                            gcHelloInterval = null;
-                        }
 
-                        if (!Protos.csgo.CMsgClientWelcome) {
-                            console.error(`[${username}] CMsgClientWelcome proto not found`);
-                            return;
-                        }
-                        let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
-                        // protoDecode returns {} on failure - guard every field.
-                        const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
-                            ? CMsgClientWelcome.outofdate_subscribed_caches
-                            : [];
-                        for (let i = 0; i < outofdateCaches.length; i++) {
-                            let outofdate_cache = outofdateCaches[i];
-                            const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
-                            for (let j = 0; j < cacheObjects.length; j++) {
-                                let cache_object = cacheObjects[j];
-                                if (!cache_object || !Array.isArray(cache_object.object_data)) {
-                                    continue;
-                                }
-                                if (cache_object.object_data.length == 0) {
-                                    continue;
-                                }
-                                switch (cache_object.type_id) {
-                                    case 7: {
-                                        let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                        // elevated_state is only a PRELIMINARY hint. The authoritative
-                                        // Prime determination is the level/XP heuristic applied last in
-                                        // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
-                                        // handlers - do not let this overwrite a heuristic result that
-                                        // has already been established (lvl > 1 or exp > 0).
-                                        if (!((data.lvl > 1) || (data.exp > 0))) {
-                                            data.prime = CSOEconGameAccountClient.elevated_state >= 4;
-                                            console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
-                                        }
+            // Per-msgType GC message handlers. Each is a closure over the
+            // enclosing check scope (data, db, steamClient, finish, attempts,
+            // gcWelcomeReceived/gcHelloInterval/gcRankDataReady, ...) so the
+            // side effects, ordering, and finish/rank-ready signaling are
+            // identical to the previous inline switch. The dispatch below
+            // selects one by msgType exactly as the switch did.
 
-                                        sleep(1000).then(function() {
-                                            if (Done) return;
-                                            steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
-                                        });
-                                        break;
-                                    }
+            // GC_MSG.ClientWelcome
+            const handleClientWelcome = (appid, payload) => {
+                gcWelcomeReceived = true;
+                if (gcHelloInterval) {
+                    clearInterval(gcHelloInterval);
+                    gcHelloInterval = null;
+                }
+
+                if (!Protos.csgo.CMsgClientWelcome) {
+                    console.error(`[${username}] CMsgClientWelcome proto not found`);
+                    return;
+                }
+                let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
+                // protoDecode returns {} on failure - guard every field.
+                const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
+                    ? CMsgClientWelcome.outofdate_subscribed_caches
+                    : [];
+                for (let i = 0; i < outofdateCaches.length; i++) {
+                    let outofdate_cache = outofdateCaches[i];
+                    const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
+                    for (let j = 0; j < cacheObjects.length; j++) {
+                        let cache_object = cacheObjects[j];
+                        if (!cache_object || !Array.isArray(cache_object.object_data)) {
+                            continue;
+                        }
+                        if (cache_object.object_data.length == 0) {
+                            continue;
+                        }
+                        switch (cache_object.type_id) {
+                            case 7: {
+                                let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
+                                // elevated_state is only a PRELIMINARY hint. The authoritative
+                                // Prime determination is the level/XP heuristic applied last in
+                                // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
+                                // handlers - do not let this overwrite a heuristic result that
+                                // has already been established (lvl > 1 or exp > 0).
+                                if (!((data.lvl > 1) || (data.exp > 0))) {
+                                    data.prime = CSOEconGameAccountClient.elevated_state >= 4;
+                                    console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
                                 }
+
+                                sleep(1000).then(function() {
+                                    if (Done) return;
+                                    steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
+                                });
+                                break;
                             }
                         }
-                        break;
                     }
-                    case GC_MSG.MatchmakingGC2ClientHello: {
+                }
+            };
+
+            // GC_MSG.MatchmakingGC2ClientHello
+            const handleMatchmakingHello = (appid, payload) => {
                         // Request all rank types
                         let rankUpdateMsg = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, {
                             rankings: [
@@ -1224,7 +1298,7 @@ function check_account(username, pass, sharedSecret) {
 
                         if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
                             console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
-                            break;
+                            return;
                         }
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
 
@@ -1259,14 +1333,15 @@ function check_account(username, pass, sharedSecret) {
                                 db.set(username, account);
                             }
                         }
-                        break;
-                    }
-                    case GC_MSG.PlayersProfile: {
-                        // Decode player profile response (msg 9128)
-                        if (!Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile) {
-                            console.log(`[${username}] CMsgGCCStrike15_v2_PlayersProfile proto not available`);
-                            break;
-                        }
+            };
+
+            // GC_MSG.PlayersProfile (msg 9128)
+            const handlePlayersProfile = (appid, payload) => {
+                // Decode player profile response (msg 9128)
+                if (!Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile) {
+                    console.log(`[${username}] CMsgGCCStrike15_v2_PlayersProfile proto not available`);
+                    return;
+                }
                         let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
                         if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
                             for (let p = 0; p < profileMsg.account_profiles.length; p++) {
@@ -1276,7 +1351,9 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = profile.player_level;
                                 }
                                 if (profile.player_cur_xp && profile.player_cur_xp > 0) {
-                                    // Convert raw absolute XP to XP-within-level
+                                    // Convert raw absolute XP to XP-within-level.
+                                    // 327680000 is the intentional CS2 XP base constant (well below
+                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
                                     const XP_BASE = 327680000;
                                     const XP_PER_LEVEL = 5000;
                                     let into = profile.player_cur_xp - XP_BASE;
@@ -1315,13 +1392,14 @@ function check_account(username, pass, sharedSecret) {
                             }
                             console.log(`[${username}] Profile data received: lvl=${data.lvl}, exp=${data.exp}`);
                         }
-                        break;
-                    }
-                    case GC_MSG.ClientGCRankUpdate: {
+            };
+
+            // GC_MSG.ClientGCRankUpdate (msg 9194)
+            const handleClientGCRankUpdate = (appid, payload) => {
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
                         if (!msg.rankings || !Array.isArray(msg.rankings)) {
                             gcRankDataReady = true;
-                            break;
+                            return;
                         }
                         for (const ranking of msg.rankings) {
                             if (!ranking) continue;
@@ -1381,8 +1459,21 @@ function check_account(username, pass, sharedSecret) {
                             data.error = null;
                             finish(data);
                         }
-                        break;
-                    }
+            };
+
+            // Dispatch table: msgType -> handler. Mirrors the original switch
+            // exactly; unlisted msgTypes are ignored (the switch had no default).
+            const GC_HANDLERS = {
+                [GC_MSG.ClientWelcome]: handleClientWelcome,
+                [GC_MSG.MatchmakingGC2ClientHello]: handleMatchmakingHello,
+                [GC_MSG.PlayersProfile]: handlePlayersProfile,
+                [GC_MSG.ClientGCRankUpdate]: handleClientGCRankUpdate
+            };
+
+            try {
+                const handler = GC_HANDLERS[msgType];
+                if (handler) {
+                    handler(appid, payload);
                 }
             } catch (error) {
                 console.error(`[${username}] Error processing GC message ${msgType}:`, error);

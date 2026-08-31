@@ -97,18 +97,24 @@ function extractTables(html) {
   // Match table elements whose class attribute contains "generic_kv_table"
   const tableRegex = /<table[^>]*class\s*=\s*"[^"]*generic_kv_table[^"]*"[^>]*>([\s\S]*?)<\/table>/gi;
   let tableMatch;
+  // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
+  // returns null when exhausted. The assignment in the condition is intentional.
   while ((tableMatch = tableRegex.exec(html)) !== null) {
     const tableHtml = tableMatch[1];
     const rows = [];
     // Extract rows
     const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
     let rowMatch;
+    // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
+    // returns null when exhausted. The assignment in the condition is intentional.
     while ((rowMatch = rowRegex.exec(tableHtml)) !== null) {
       const rowHtml = rowMatch[1];
       const cells = [];
       // Extract cells (th or td)
       const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
       let cellMatch;
+      // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
+      // returns null when exhausted. The assignment in the condition is intentional.
       while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
         cells.push(stripTags(cellMatch[1]));
       }
@@ -163,6 +169,89 @@ function findColumn(header, needles) {
     }
   }
   return -1;
+}
+
+/**
+ * Parse a cooldown table into the running matchmaking `result`. Tracks the
+ * earliest future cooldown and a permanent (COOLDOWN_NEVER) cooldown, matching
+ * the original inline behavior exactly.
+ * @param {Array<Array<string>>} tbl - parsed cooldown table (rows of cells)
+ * @param {object} result - matchmaking result object (mutated in place)
+ * @param {number} nowSeconds - current Unix time in seconds
+ */
+function parseCooldownTable(tbl, result, nowSeconds) {
+  for (let i = 1; i < tbl.length; i++) {
+    const row = tbl[i];
+    if (row.length === 0) continue;
+    const ts = parseGcpdTimestamp(row[0]);
+    if (ts === 0) {
+      // Non-timestamp row: check for permanent cooldown indicator
+      const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
+      if (row[0] && hasLevel) {
+        result.cooldown_expires_unix = COOLDOWN_NEVER;
+        result.cooldown_reason = 'Competitive cooldown';
+      }
+      continue;
+    }
+    // Skip if already permanently banned
+    if (result.cooldown_expires_unix === COOLDOWN_NEVER) continue;
+    // Only track future cooldowns, pick the earliest
+    if (ts > nowSeconds &&
+        (result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix)) {
+      result.cooldown_expires_unix = ts;
+      result.cooldown_reason = 'Competitive cooldown';
+    }
+  }
+}
+
+/**
+ * Parse a matchmaking-mode table into the running matchmaking `result`. Uses
+ * dynamic Skill/Wins column detection and records Premier/Wingman presence and
+ * values, matching the original inline behavior exactly. Map-specific tables
+ * and tables whose Skill/Wins columns cannot be identified are skipped.
+ * @param {Array<Array<string>>} tbl - parsed matchmaking-mode table
+ * @param {object} result - matchmaking result object (mutated in place)
+ */
+function parseMatchmakingModeTable(tbl, result) {
+  const header = tbl[0];
+  // Skip map-specific tables (localized map header keywords)
+  if (headerContainsAnyCell(tbl, KEYWORDS_MAP)) {
+    return;
+  }
+
+  // Dynamically find column indices for Skill and Wins from the header row.
+  const skillCol = findColumn(header, KEYWORDS_SKILL);
+  const winsCol = findColumn(header, KEYWORDS_WINS);
+  // If neither column can be identified from the header, skip this table
+  // rather than guessing wrong columns (guessing wrong is worse than
+  // returning unknown).
+  if (skillCol < 0 && winsCol < 0) {
+    return;
+  }
+
+  for (let i = 1; i < tbl.length; i++) {
+    const row = tbl[i];
+    if (row.length === 0) continue;
+    const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
+    const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
+    if (skill < 0 && wins < 0) continue;
+
+    // The row exists for this mode: mark it present so the caller can tell
+    // "expired/unranked (rating 0)" apart from "no data". Record a parsed
+    // rating/rank of 0 too (skill === 0), which is exactly the expired /
+    // unranked case - only skip writing when the skill column was absent
+    // (skill < 0). Wins are written whenever the column was present
+    // (wins >= 0), including 0.
+    if (containsCI(row[0], 'Premier')) {
+      result.premier_present = true;
+      if (skill >= 0) result.premier_rating = skill;
+      if (wins >= 0) result.premier_wins = wins;
+    } else if (containsCI(row[0], 'Wingman')) {
+      result.wingman_present = true;
+      if (skill >= 0) result.wingman_rank = skill;
+      if (wins >= 0) result.wingman_wins = wins;
+    }
+  }
 }
 
 /**
@@ -223,71 +312,13 @@ function parseMatchmaking(html) {
 
     // Cooldown table
     if (findColumn(header, KEYWORDS_COOLDOWN) === 0 || containsCI(header[0], 'Cooldown')) {
-      for (let i = 1; i < tbl.length; i++) {
-        const row = tbl[i];
-        if (row.length === 0) continue;
-        const ts = parseGcpdTimestamp(row[0]);
-        if (ts === 0) {
-          // Non-timestamp row: check for permanent cooldown indicator
-          const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
-          if (row[0] && hasLevel) {
-            result.cooldown_expires_unix = COOLDOWN_NEVER;
-            result.cooldown_reason = 'Competitive cooldown';
-          }
-          continue;
-        }
-        // Skip if already permanently banned
-        if (result.cooldown_expires_unix === COOLDOWN_NEVER) continue;
-        // Only track future cooldowns, pick the earliest
-        if (ts > nowSeconds &&
-            (result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix)) {
-          result.cooldown_expires_unix = ts;
-          result.cooldown_reason = 'Competitive cooldown';
-        }
-      }
+      parseCooldownTable(tbl, result, nowSeconds);
       continue;
     }
 
     // Matchmaking Mode table
     if (findColumn(header, KEYWORDS_MM_MODE) === 0 || containsCI(header[0], 'Matchmaking Mode')) {
-      // Skip map-specific tables (localized map header keywords)
-      if (headerContainsAnyCell(tbl, KEYWORDS_MAP)) {
-        continue;
-      }
-
-      // Dynamically find column indices for Skill and Wins from the header row.
-      const skillCol = findColumn(header, KEYWORDS_SKILL);
-      const winsCol = findColumn(header, KEYWORDS_WINS);
-      // If neither column can be identified from the header, skip this table
-      // rather than guessing wrong columns (guessing wrong is worse than
-      // returning unknown).
-      if (skillCol < 0 && winsCol < 0) {
-        continue;
-      }
-
-      for (let i = 1; i < tbl.length; i++) {
-        const row = tbl[i];
-        if (row.length === 0) continue;
-        const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
-        const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
-        if (skill < 0 && wins < 0) continue;
-
-        // The row exists for this mode: mark it present so the caller can tell
-        // "expired/unranked (rating 0)" apart from "no data". Record a parsed
-        // rating/rank of 0 too (skill === 0), which is exactly the expired /
-        // unranked case - only skip writing when the skill column was absent
-        // (skill < 0). Wins are written whenever the column was present
-        // (wins >= 0), including 0.
-        if (containsCI(row[0], 'Premier')) {
-          result.premier_present = true;
-          if (skill >= 0) result.premier_rating = skill;
-          if (wins >= 0) result.premier_wins = wins;
-        } else if (containsCI(row[0], 'Wingman')) {
-          result.wingman_present = true;
-          if (skill >= 0) result.wingman_rank = skill;
-          if (wins >= 0) result.wingman_wins = wins;
-        }
-      }
+      parseMatchmakingModeTable(tbl, result);
       continue;
     }
   }
