@@ -739,6 +739,18 @@ function check_account(username, pass, sharedSecret) {
         let gcRankDataReady = false;
         let steamClient = new User();
 
+        // Steam Guard IPC listener registered for THIS check (if the renderer
+        // is prompted). Tracked here so every terminal path can tear it down;
+        // otherwise a listener registered for an account that keeps hitting
+        // Steam Guard would outlive its check and accumulate across retries.
+        let steamGuardResponseHandler = null;
+        function removeSteamGuardListener() {
+            if (steamGuardResponseHandler) {
+                ipcMain.removeListener('steam:steamguard:response', steamGuardResponseHandler);
+                steamGuardResponseHandler = null;
+            }
+        }
+
         let data = {
             prime: false,
             name: null,
@@ -763,6 +775,7 @@ function check_account(username, pass, sharedSecret) {
         function finish(resolveData) {
             if (Done) return;
             Done = true;
+            removeSteamGuardListener();
             if (gcHelloInterval) {
                 clearInterval(gcHelloInterval);
                 gcHelloInterval = null;
@@ -812,6 +825,7 @@ function check_account(username, pass, sharedSecret) {
         });
 
         steamClient.on('disconnected', (eresult, msg) => {
+            removeSteamGuardListener();
             clearCurrentlyChecking(username);
         });
 
@@ -837,6 +851,7 @@ function check_account(username, pass, sharedSecret) {
             if (e.eresult === 65) {
                 steamTimeOffset = null;
             }
+            removeSteamGuardListener();
             if (gcHelloInterval) {
                 clearInterval(gcHelloInterval);
                 gcHelloInterval = null;
@@ -889,7 +904,7 @@ function check_account(username, pass, sharedSecret) {
                     if (respondedUsername != null && respondedUsername !== username) {
                         return; // not for us - leave the listener in place
                     }
-                    ipcMain.removeListener('steam:steamguard:response', responseHandler);
+                    removeSteamGuardListener();
                     if (!code) {
                         clearCurrentlyChecking(username);
                         const err = new Error('steam guard missing');
@@ -899,6 +914,7 @@ function check_account(username, pass, sharedSecret) {
                         callback(code);
                     }
                 };
+                steamGuardResponseHandler = responseHandler;
                 ipcMain.on('steam:steamguard:response', responseHandler);
             }
         });
