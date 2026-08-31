@@ -54,5 +54,6 @@ npm run build     # build installers/packages for Windows and Linux
 > servers, which is **not possible in CI** (no display, no credentials). That
 > path must be validated manually.
 
-## screenshots
+## Screenshots
+
 ![image](https://user-images.githubusercontent.com/29180158/119862011-56202680-bf18-11eb-97db-229ff5c13535.png)

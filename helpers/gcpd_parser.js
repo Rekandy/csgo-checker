@@ -96,35 +96,32 @@ function extractTables(html) {
   const tables = [];
   // Match table elements whose class attribute contains "generic_kv_table"
   const tableRegex = /<table[^>]*class\s*=\s*"[^"]*generic_kv_table[^"]*"[^>]*>([\s\S]*?)<\/table>/gi;
-  let tableMatch;
-  // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
-  // returns null when exhausted. The assignment in the condition is intentional.
-  while ((tableMatch = tableRegex.exec(html)) !== null) {
+  let tableMatch = tableRegex.exec(html);
+  while (tableMatch !== null) {
     const tableHtml = tableMatch[1];
     const rows = [];
     // Extract rows
     const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-    let rowMatch;
-    // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
-    // returns null when exhausted. The assignment in the condition is intentional.
-    while ((rowMatch = rowRegex.exec(tableHtml)) !== null) {
+    let rowMatch = rowRegex.exec(tableHtml);
+    while (rowMatch !== null) {
       const rowHtml = rowMatch[1];
       const cells = [];
       // Extract cells (th or td)
       const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
-      let cellMatch;
-      // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
-      // returns null when exhausted. The assignment in the condition is intentional.
-      while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
+      let cellMatch = cellRegex.exec(rowHtml);
+      while (cellMatch !== null) {
         cells.push(stripTags(cellMatch[1]));
+        cellMatch = cellRegex.exec(rowHtml);
       }
       if (cells.length > 0) {
         rows.push(cells);
       }
+      rowMatch = rowRegex.exec(tableHtml);
     }
     if (rows.length > 0) {
       tables.push(rows);
     }
+    tableMatch = tableRegex.exec(html);
   }
   return tables;
 }
@@ -172,111 +169,85 @@ function findColumn(header, needles) {
 }
 
 /**
- * Parse a cooldown table into the running matchmaking `result`. Tracks the
- * earliest future cooldown and a permanent (COOLDOWN_NEVER) cooldown, matching
- * the original inline behavior exactly.
- * @param {Array<Array<string>>} tbl - parsed cooldown table (rows of cells)
- * @param {object} result - matchmaking result object (mutated in place)
- * @param {number} nowSeconds - current Unix time in seconds
+ * Helper to process a single row in the cooldown table.
  */
-function parseCooldownTable(tbl, result, nowSeconds) {
-  for (let i = 1; i < tbl.length; i++) {
-    const row = tbl[i];
-    if (row.length === 0) continue;
-    const ts = parseGcpdTimestamp(row[0]);
-    if (ts === 0) {
-      // Non-timestamp row: check for permanent cooldown indicator
-      const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
-      if (row[0] && hasLevel) {
-        result.cooldown_expires_unix = COOLDOWN_NEVER;
-        result.cooldown_reason = 'Competitive cooldown';
-      }
-      continue;
-    }
-    // Skip if already permanently banned
-    if (result.cooldown_expires_unix === COOLDOWN_NEVER) continue;
-    // Only track future cooldowns, pick the earliest
-    if (ts > nowSeconds &&
-        (result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix)) {
-      result.cooldown_expires_unix = ts;
+function processCooldownRow(row, result, nowSeconds) {
+  if (!row || row.length === 0) return;
+  const ts = parseGcpdTimestamp(row[0]);
+  if (ts === 0) {
+    const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
+    if (row[0] && hasLevel) {
+      result.cooldown_expires_unix = COOLDOWN_NEVER;
       result.cooldown_reason = 'Competitive cooldown';
     }
+    return;
+  }
+  if (result.cooldown_expires_unix === COOLDOWN_NEVER) return;
+  if (ts > nowSeconds && (result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix)) {
+    result.cooldown_expires_unix = ts;
+    result.cooldown_reason = 'Competitive cooldown';
   }
 }
 
 /**
- * Parse a matchmaking-mode table into the running matchmaking `result`. Uses
- * dynamic Skill/Wins column detection and records Premier/Wingman presence and
- * values, matching the original inline behavior exactly. Map-specific tables
- * and tables whose Skill/Wins columns cannot be identified are skipped.
- * @param {Array<Array<string>>} tbl - parsed matchmaking-mode table
- * @param {object} result - matchmaking result object (mutated in place)
+ * Parse a cooldown table into the running matchmaking `result`.
+ */
+function parseCooldownTable(tbl, result, nowSeconds) {
+  for (let i = 1; i < tbl.length; i++) {
+    processCooldownRow(tbl[i], result, nowSeconds);
+  }
+}
+
+/**
+ * Helper to process a single row in the matchmaking mode table.
+ */
+function processModeRow(row, skillCol, winsCol, result) {
+  if (!row || row.length === 0) return;
+  const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
+  const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
+  if (skill < 0 && wins < 0) return;
+
+  if (containsCI(row[0], 'Premier')) {
+    result.premier_present = true;
+    if (skill >= 0) result.premier_rating = skill;
+    if (wins >= 0) result.premier_wins = wins;
+  } else if (containsCI(row[0], 'Wingman')) {
+    result.wingman_present = true;
+    if (skill >= 0) result.wingman_rank = skill;
+    if (wins >= 0) result.wingman_wins = wins;
+  }
+}
+
+/**
+ * Parse a matchmaking-mode table into the running matchmaking `result`.
  */
 function parseMatchmakingModeTable(tbl, result) {
   const header = tbl[0];
-  // Skip map-specific tables (localized map header keywords)
-  if (headerContainsAnyCell(tbl, KEYWORDS_MAP)) {
-    return;
-  }
+  if (headerContainsAnyCell(tbl, KEYWORDS_MAP)) return;
 
-  // Dynamically find column indices for Skill and Wins from the header row.
   const skillCol = findColumn(header, KEYWORDS_SKILL);
   const winsCol = findColumn(header, KEYWORDS_WINS);
-  // If neither column can be identified from the header, skip this table
-  // rather than guessing wrong columns (guessing wrong is worse than
-  // returning unknown).
-  if (skillCol < 0 && winsCol < 0) {
-    return;
-  }
+  if (skillCol < 0 && winsCol < 0) return;
 
   for (let i = 1; i < tbl.length; i++) {
-    const row = tbl[i];
-    if (row.length === 0) continue;
-    const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
-    const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
-    if (skill < 0 && wins < 0) continue;
+    processModeRow(tbl[i], skillCol, winsCol, result);
+  }
+}
 
-    // The row exists for this mode: mark it present so the caller can tell
-    // "expired/unranked (rating 0)" apart from "no data". Record a parsed
-    // rating/rank of 0 too (skill === 0), which is exactly the expired /
-    // unranked case - only skip writing when the skill column was absent
-    // (skill < 0). Wins are written whenever the column was present
-    // (wins >= 0), including 0.
-    if (containsCI(row[0], 'Premier')) {
-      result.premier_present = true;
-      if (skill >= 0) result.premier_rating = skill;
-      if (wins >= 0) result.premier_wins = wins;
-    } else if (containsCI(row[0], 'Wingman')) {
-      result.wingman_present = true;
-      if (skill >= 0) result.wingman_rank = skill;
-      if (wins >= 0) result.wingman_wins = wins;
-    }
+function processSingleTable(tbl, result, nowSeconds) {
+  if (tbl.length < 2) return;
+  const header = tbl[0];
+  if (!header || header.length === 0) return;
+
+  if (findColumn(header, KEYWORDS_COOLDOWN) === 0 || containsCI(header[0], 'Cooldown')) {
+    parseCooldownTable(tbl, result, nowSeconds);
+  } else if (findColumn(header, KEYWORDS_MM_MODE) === 0 || containsCI(header[0], 'Matchmaking Mode')) {
+    parseMatchmakingModeTable(tbl, result);
   }
 }
 
 /**
  * Parse matchmaking data from GCPD 590/matchmaking HTML.
- *
- * Extracts Premier rating/wins, Wingman rank/wins, and active cooldowns.
- * Uses dynamic column detection from the table header row.
- *
- * Unknown sentinels: numeric fields stay at 0 when the value cannot be
- * determined; cooldown_expires_unix is 0 when there is no cooldown and
- * COOLDOWN_NEVER (-1) for a permanent cooldown. `ok` is false when the input
- * is null/empty/malformed or contains no parseable GCPD tables. This function
- * never throws and never fabricates values.
- *
- * @param {string} html - Full HTML of the GCPD matchmaking page
- * The *_present flags indicate whether a row for that mode actually existed in
- * the matchmaking table. They let the caller distinguish "no data at all"
- * (present === false, leave the cache untouched) from "the mode is expired /
- * unranked" (present === true with rating/rank 0). An EXPIRED mode is a present
- * row whose rating/rank is 0 while wins indicate prior play - the caller maps
- * that to the frontend's expired sentinels (premier -> -1, wingman -> rank 0
- * with wins retained).
- *
- * @param {string} html - Full HTML of the GCPD matchmaking page
- * @returns {{ok: boolean, premier_rating: number, premier_wins: number, premier_present: boolean, wingman_rank: number, wingman_wins: number, wingman_present: boolean, cooldown_expires_unix: number, cooldown_reason: string}}
  */
 function parseMatchmaking(html) {
   const result = {
@@ -301,31 +272,11 @@ function parseMatchmaking(html) {
   result.ok = true;
 
   try {
-
-  const nowSeconds = Math.floor(Date.now() / 1000);
-
-  for (let t = 0; t < tables.length; t++) {
-    const tbl = tables[t];
-    if (tbl.length < 2) continue;
-    const header = tbl[0];
-    if (header.length === 0) continue;
-
-    // Cooldown table
-    if (findColumn(header, KEYWORDS_COOLDOWN) === 0 || containsCI(header[0], 'Cooldown')) {
-      parseCooldownTable(tbl, result, nowSeconds);
-      continue;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    for (let t = 0; t < tables.length; t++) {
+      processSingleTable(tables[t], result, nowSeconds);
     }
-
-    // Matchmaking Mode table
-    if (findColumn(header, KEYWORDS_MM_MODE) === 0 || containsCI(header[0], 'Matchmaking Mode')) {
-      parseMatchmakingModeTable(tbl, result);
-      continue;
-    }
-  }
-
   } catch (e) {
-    // Never throw: return whatever was parsed so far (ok stays true because
-    // tables were present), leaving unknown fields at their sentinels.
     return result;
   }
 
