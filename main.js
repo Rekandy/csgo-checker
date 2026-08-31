@@ -828,6 +828,15 @@ function check_account(username, pass, sharedSecret) {
                 default: errorStr = `Unknown: ${e.eresult}`;    break;
             }
             console.log(`[${username}] Login error: ${errorStr} (eresult=${e.eresult})`);
+            // A Steam-Guard-invalid result (eresult 65) on the shared-secret
+            // TOTP path is the classic symptom of a stale cached time offset:
+            // the process caches steamTimeOffset on first use and never
+            // refreshes it, so clock drift over a long-running session starts
+            // producing codes Steam rejects. Invalidate the cache so the next
+            // attempt re-fetches a fresh offset before generating a code.
+            if (e.eresult === 65) {
+                steamTimeOffset = null;
+            }
             if (gcHelloInterval) {
                 clearInterval(gcHelloInterval);
                 gcHelloInterval = null;
