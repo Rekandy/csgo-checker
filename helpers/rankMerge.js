@@ -214,7 +214,75 @@ function cascadeVac(data) {
   return data;
 }
 
+/**
+ * Data-driven descriptor for ClientGCRankUpdate (GC msg 9194) rank_type_id
+ * handling. Each entry names the rank/wins fields the mode writes, the
+ * console.log label, and two behavioral flags:
+ *   vacCascade          - after assigning, if data.wins === -1 (VAC) force this
+ *                         mode's rank/wins to -1;
+ *   premierExpiredGuard - only overwrite the rank field when it is not already
+ *                         the expired premier sentinel -1 (rank_id carries the
+ *                         RATING for premier; the expired -1 is derived from the
+ *                         GCPD path and must not be clobbered here).
+ * Mirrors the original four repeated if-blocks in main.js exactly.
+ */
+const GC_RANK_UPDATE_TYPES = {
+  6:  { rank: 'rank',         wins: 'wins',         label: 'Competitive rank' },
+  7:  { rank: 'rank_wg',      wins: 'wins_wg',      label: 'Wingman rank',     vacCascade: true },
+  10: { rank: 'rank_dz',      wins: 'wins_dz',      label: 'Danger Zone rank', vacCascade: true },
+  11: { rank: 'rank_premier', wins: 'wins_premier', label: 'Premier rank',     vacCascade: true, premierExpiredGuard: true }
+};
+
+/**
+ * Apply a single ClientGCRankUpdate (GC msg 9194) ranking entry to `data` using
+ * the descriptor table. Assignment is UNCONDITIONAL when an entry exists (an
+ * EXPIRED rank arrives as rank_id 0 with wins > 0, which the frontend reads as
+ * expired via `rank == 0 && wins >= 10`); undefined is normalized to 0 so we
+ * never write undefined. This is the 9194 counterpart to applyGcRanking (which
+ * covers the 9128 PlayersProfile path); the two differ only in the premier
+ * expired-guard / VAC-cascade shape that mirrors the original inline handlers.
+ *
+ * The optional `log` callback is invoked as log(label, rankValue, winsValue)
+ * AFTER the assignment and BEFORE the VAC cascade, matching the original
+ * console.log placement. It is a no-op when omitted.
+ *
+ * @param {object} data - account data object (mutated in place)
+ * @param {object} ranking - a PlayerRankingInfo-like object
+ * @param {function(string, number, number):void} [log] - optional log callback
+ * @returns {object} data
+ */
+function applyGcRankUpdateEntry(data, ranking, log) {
+  if (!data || !ranking) return data;
+  const spec = GC_RANK_UPDATE_TYPES[ranking.rank_type_id];
+  if (!spec) return data;
+  const rankId = ranking.rank_id ?? 0;
+  const rankWins = ranking.wins ?? 0;
+
+  data[spec.wins] = rankWins;
+  if (spec.premierExpiredGuard) {
+    // Do not clobber an expired premier sentinel (-1) already set by the GCPD
+    // path, which has the wins signal to tell expired from never-ranked.
+    if (data[spec.rank] !== -1) {
+      data[spec.rank] = rankId;
+    }
+  } else {
+    data[spec.rank] = rankId;
+  }
+
+  if (typeof log === 'function') {
+    log(spec.label, data[spec.rank], data[spec.wins]);
+  }
+
+  if (spec.vacCascade && data.wins === -1) { // vac banned
+    data[spec.wins] = -1;
+    data[spec.rank] = -1;
+  }
+
+  return data;
+}
+
 module.exports = {
   mergeGcpdMatchmaking,
-  applyGcRanking
+  applyGcRanking,
+  applyGcRankUpdateEntry
 };

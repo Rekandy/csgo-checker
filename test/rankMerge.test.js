@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { applyGcRanking, mergeGcpdMatchmaking } = require('../helpers/rankMerge.js');
+const { applyGcRanking, mergeGcpdMatchmaking, applyGcRankUpdateEntry } = require('../helpers/rankMerge.js');
 
 // --- Fixture builders -------------------------------------------------------
 
@@ -146,6 +146,95 @@ test('applyGcRanking: expired 0 is NOT treated as VAC (no false cascade)', () =>
     assert.strictEqual(data.rank, 0);
     assert.strictEqual(data.rank_wg, 0);
     assert.strictEqual(data.wins_wg, 25);
+});
+
+// ============================================================================
+// applyGcRankUpdateEntry (ClientGCRankUpdate / GC msg 9194)
+// ============================================================================
+
+test('applyGcRankUpdateEntry: active competitive writes rank/wins, no cascade/guard', () => {
+    const data = freshData();
+    applyGcRankUpdateEntry(data, ranking(6, 12, 250));
+    assert.strictEqual(data.rank, 12);
+    assert.strictEqual(data.wins, 250);
+});
+
+test('applyGcRankUpdateEntry: expired rank (rank_id 0 + wins) is preserved unconditionally', () => {
+    const data = freshData();
+    applyGcRankUpdateEntry(data, ranking(6, 0, 42));
+    assert.strictEqual(data.rank, 0);
+    assert.strictEqual(data.wins, 42);
+});
+
+test('applyGcRankUpdateEntry: rank_id/wins undefined normalize to 0 (never undefined)', () => {
+    const data = freshData();
+    applyGcRankUpdateEntry(data, { rank_type_id: 7 });
+    assert.strictEqual(data.rank_wg, 0);
+    assert.strictEqual(data.wins_wg, 0);
+});
+
+test('applyGcRankUpdateEntry: unknown rank_type_id is ignored', () => {
+    const data = freshData();
+    applyGcRankUpdateEntry(data, ranking(99, 5, 5));
+    assert.strictEqual(data.rank, null);
+    assert.strictEqual(data.rank_wg, null);
+});
+
+test('applyGcRankUpdateEntry: VAC cascades into wingman/dz/premier when data.wins === -1', () => {
+    const data = freshData();
+    data.wins = -1; // competitive VAC already established
+    applyGcRankUpdateEntry(data, ranking(7, 5, 20));
+    applyGcRankUpdateEntry(data, ranking(10, 2, 8));
+    applyGcRankUpdateEntry(data, ranking(11, 15000, 30));
+    assert.strictEqual(data.rank_wg, -1);
+    assert.strictEqual(data.wins_wg, -1);
+    assert.strictEqual(data.rank_dz, -1);
+    assert.strictEqual(data.wins_dz, -1);
+    assert.strictEqual(data.rank_premier, -1);
+    assert.strictEqual(data.wins_premier, -1);
+});
+
+test('applyGcRankUpdateEntry: competitive entry does NOT cascade (no vacCascade flag)', () => {
+    const data = freshData();
+    data.wins = -1;
+    // A competitive entry writes wins unconditionally; type 6 has no cascade.
+    applyGcRankUpdateEntry(data, ranking(6, 0, 0));
+    assert.strictEqual(data.rank, 0);
+    assert.strictEqual(data.wins, 0);
+});
+
+test('applyGcRankUpdateEntry: premier expired sentinel (-1) is not clobbered', () => {
+    const data = freshData();
+    data.rank_premier = -1; // GCPD-derived expired premier
+    applyGcRankUpdateEntry(data, ranking(11, 20000, 40));
+    // wins is still written, but the expired rank sentinel survives.
+    assert.strictEqual(data.rank_premier, -1);
+    assert.strictEqual(data.wins_premier, 40);
+});
+
+test('applyGcRankUpdateEntry: premier rank written when not the expired sentinel', () => {
+    const data = freshData();
+    applyGcRankUpdateEntry(data, ranking(11, 21000, 60));
+    assert.strictEqual(data.rank_premier, 21000);
+    assert.strictEqual(data.wins_premier, 60);
+});
+
+test('applyGcRankUpdateEntry: log callback fires after assignment, before VAC cascade', () => {
+    const data = freshData();
+    data.wins = -1; // trigger cascade for wingman
+    const calls = [];
+    applyGcRankUpdateEntry(data, ranking(7, 5, 20), (label, r, w) => calls.push([label, r, w]));
+    // At log time the wingman rank/wins are the assigned 5/20, not the post-cascade -1.
+    assert.deepStrictEqual(calls, [['Wingman rank', 5, 20]]);
+    // The cascade still applied afterwards.
+    assert.strictEqual(data.rank_wg, -1);
+    assert.strictEqual(data.wins_wg, -1);
+});
+
+test('applyGcRankUpdateEntry: null data/ranking is a no-op', () => {
+    assert.strictEqual(applyGcRankUpdateEntry(null, ranking(6, 1, 1)), null);
+    const data = freshData();
+    assert.strictEqual(applyGcRankUpdateEntry(data, null), data);
 });
 
 // ============================================================================

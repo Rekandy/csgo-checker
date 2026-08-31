@@ -11,7 +11,7 @@ const path = require('path');
 const { EOL } = require('os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
 const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage, extractCompetitiveMaps } = require('./helpers/gcpd_parser.js');
-const { mergeGcpdMatchmaking, applyGcRanking } = require('./helpers/rankMerge.js');
+const { mergeGcpdMatchmaking, applyGcRanking, applyGcRankUpdateEntry } = require('./helpers/rankMerge.js');
 const logger = require('./helpers/logger.js');
 const { parseAccountLines } = require('./helpers/importParser.js');
 const { TaskQueue } = require('./helpers/queue.js');
@@ -1384,53 +1384,13 @@ function check_account(username, pass, sharedSecret) {
                         }
             };
 
-            // Data-driven descriptor for ClientGCRankUpdate rank_type_id
-            // handling. Each entry names the rank/wins fields the mode writes,
-            // the console.log label, and two behavioral flags:
-            //   vacCascade         - after assigning, if data.wins === -1 (VAC)
-            //                        force this mode's rank/wins to -1;
-            //   premierExpiredGuard - only overwrite the rank field when it is
-            //                        not already the expired premier sentinel -1
-            //                        (rank_id carries the RATING for premier;
-            //                        the expired -1 is derived from the GCPD path
-            //                        and must not be clobbered here).
-            // Mirrors the original four repeated if-blocks exactly.
-            const GC_RANK_UPDATE_TYPES = {
-                6:  { rank: 'rank',         wins: 'wins',         label: 'Competitive rank' },
-                7:  { rank: 'rank_wg',      wins: 'wins_wg',      label: 'Wingman rank',     vacCascade: true },
-                10: { rank: 'rank_dz',      wins: 'wins_dz',      label: 'Danger Zone rank', vacCascade: true },
-                11: { rank: 'rank_premier', wins: 'wins_premier', label: 'Premier rank',     vacCascade: true, premierExpiredGuard: true }
-            };
-
-            // Apply a single ClientGCRankUpdate ranking entry to `data` using
-            // the descriptor table. Assignment is UNCONDITIONAL when an entry
-            // exists (an EXPIRED rank arrives as rank_id 0 with wins > 0, which
-            // the frontend reads as expired via `rank==0 && wins>=10`); undefined
-            // is normalized to 0 so we never write undefined.
-            const applyRankUpdateEntry = (ranking) => {
-                const spec = GC_RANK_UPDATE_TYPES[ranking.rank_type_id];
-                if (!spec) return;
-                const rankId = ranking.rank_id ?? 0;
-                const rankWins = ranking.wins ?? 0;
-
-                data[spec.wins] = rankWins;
-                if (spec.premierExpiredGuard) {
-                    // Do not clobber an expired premier sentinel (-1) already
-                    // set by the GCPD path, which has the wins signal to tell
-                    // expired from never-ranked.
-                    if (data[spec.rank] !== -1) {
-                        data[spec.rank] = rankId;
-                    }
-                } else {
-                    data[spec.rank] = rankId;
-                }
-
-                console.log(`[${username}] ${spec.label}: ${data[spec.rank]}, wins: ${data[spec.wins]}`);
-
-                if (spec.vacCascade && data.wins === -1) { // vac banned
-                    data[spec.wins] = -1;
-                    data[spec.rank] = -1;
-                }
+            // ClientGCRankUpdate (msg 9194) rank entries are applied by the
+            // data-driven applyGcRankUpdateEntry helper in helpers/rankMerge.js
+            // (GC_RANK_UPDATE_TYPES table + VAC cascade + premier expired guard).
+            // The log callback reproduces the original per-entry console.log
+            // placement: label after assignment, before the VAC cascade.
+            const logRankUpdate = (label, rankValue, winsValue) => {
+                console.log(`[${username}] ${label}: ${rankValue}, wins: ${winsValue}`);
             };
 
             // GC_MSG.ClientGCRankUpdate (msg 9194)
@@ -1442,7 +1402,7 @@ function check_account(username, pass, sharedSecret) {
                         }
                         for (const ranking of msg.rankings) {
                             if (!ranking) continue;
-                            applyRankUpdateEntry(ranking);
+                            applyGcRankUpdateEntry(data, ranking, logRankUpdate);
                         }
 
                         // If we have steamid and at least one rank has been set, we can finish
