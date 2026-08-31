@@ -66,7 +66,7 @@
 
 ## 1.0.0
 
-**⚠️ Data storage format changed, please refresh all accounts for ranks to display correctly ⚠️**
+> ⚠️ **Data storage format changed, please refresh all accounts for ranks to display correctly** ⚠️
 
 - ui overhaul
 - migrated ui from materializecss to bootstrap

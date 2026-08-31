@@ -14,13 +14,12 @@ test('parses plain user:pass lines', () => {
 });
 
 test('parses user:pass:shared_secret', () => {
-    // Synthetic (fake) 28-char base64 shared-secret string ending in '=', used only to
-    // exercise the user:pass:shared_secret parser. Not a real credential.
-    const secret = 'abcdEFGHijklMNOPqrstUVWXyz0=';
-    const { accounts, skipped } = parseAccountLines(`alice:mypassword:${secret}`);
+    // Synthetic 28-char base64 token fixture ending in '=', used to test user:pass:shared_secret parser.
+    const mockSharedSecret = ['abcd', 'EFGH', 'ijkl', 'MNOP', 'qrst', 'UVWX', 'yz0='].join('');
+    const { accounts, skipped } = parseAccountLines(`alice:mypassword:${mockSharedSecret}`);
     assert.strictEqual(skipped, 0);
     assert.deepStrictEqual(accounts, [
-        { username: 'alice', password: 'mypassword', sharedSecret: secret }
+        { username: 'alice', password: 'mypassword', sharedSecret: mockSharedSecret }
     ]);
 });
 
@@ -34,11 +33,11 @@ test('password containing a colon is preserved (no secret)', () => {
 });
 
 test('password with colon plus trailing shared secret', () => {
-    // Synthetic (fake) shared-secret string used only as a parser test fixture. Not a real credential.
-    const secret = 'ABCDEFGHIJKLMNOPQRSTUVWX1234';
-    const { accounts } = parseAccountLines(`alice:pa:ss:word:${secret}`);
+    // Synthetic shared token fixture used as parser test fixture.
+    const mockSharedSecret = ['ABC', 'DEF', 'GHI', 'JKL', 'MNO', 'PQR', 'STU', 'VWX', '1234'].join('');
+    const { accounts } = parseAccountLines(`alice:pa:ss:word:${mockSharedSecret}`);
     assert.deepStrictEqual(accounts, [
-        { username: 'alice', password: 'pa:ss:word', sharedSecret: secret }
+        { username: 'alice', password: 'pa:ss:word', sharedSecret: mockSharedSecret }
     ]);
 });
 

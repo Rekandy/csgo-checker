@@ -368,33 +368,45 @@ function createTagEdit(name, color = '#000000') {
  * @param {*} account account object
  * @returns {Boolean} matches? 
  */
+function getAccountSearchStrings(login, account) {
+  const penalty = formatPenalty(account.penalty_reason || '?', account.penalty_seconds != null ? account.penalty_seconds : -1);
+  const mmRank = getRankName(account.rank || 0, account.wins || 0);
+  const wgRank = getRankName(account.rank_wg || 0, account.wins_wg || 0);
+  const dzRank = getDZRankName(account.rank_dz || 0, account.wins_dz || 0);
+
+  const list = [
+    login,
+    account.name,
+    account.prime ? 'prime' : null,
+    account.error,
+    penalty,
+    account.steamid ? String(account.steamid) : null,
+    mmRank,
+    wgRank,
+    dzRank
+  ];
+  if (Array.isArray(account.tags)) {
+    list.push(...account.tags);
+  }
+  return list.filter(Boolean).map(s => String(s).toLowerCase());
+}
+
+/**
+ * Filter an account against a search query.
+ * @param {string} q
+ * @param {string} login
+ * @param {object} account
+ * @returns {boolean}
+ */
 function execSearch(q, login, account) {
+  const query = q.trim().toLowerCase();
+  if (query.length === 0) return true;
 
-  q = q.trim();
-  if (q.length == 0) {
-    return true;
-  }
+  const tokens = query.split(' ').filter(Boolean);
+  if (tokens.length === 0) return true;
 
-  let strings = [];
-  strings.push(login);
-  strings.push(account.name ?? null);
-  if (account.tags) {
-    account.tags.forEach(tag => {
-      strings.push(tag);
-    });
-  }
-  strings.push(account.prime ? "prime" : null);
-  strings.push(account.error ?? null);
-  strings.push(formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1));
-  strings.push(account.steamid ? "" + account.steamid : null)
-  strings.push(getRankName(account.rank ?? 0, account.wins ?? 0));
-  strings.push(getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0));
-  strings.push(getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0));
-
-  return q.toLowerCase().split(' ').map(x => {
-    return strings.find(v => v && v.toLowerCase().includes(x)) != undefined
-  }).reduce((prev, cur) => prev && cur, true);
-
+  const searchData = getAccountSearchStrings(login, account);
+  return tokens.every(token => searchData.some(str => str.includes(token)));
 }
 
 /**
@@ -683,36 +695,34 @@ function premierExpireSuffix(account) {
   return `<br>last match ${day}.${month}.${year} ${hours}:${minutes}`;
 }
 
+function renderSingleRank(imgEl, rank, wins, mode, expireText, isDz) {
+  const rankVal = rank ?? 0;
+  const winsVal = wins ?? 0;
+  imgEl.src = getRankImage(rankVal, winsVal, mode);
+  const rankName = isDz ? getDZRankName(rankVal, winsVal) : getRankName(rankVal, winsVal, mode);
+  const winsDisplay = wins < 0 ? '?' : (wins != null ? wins : '?');
+  imgEl.title = `${rankName}<br>${winsDisplay} wins${expireText}`;
+  const tooltip = bootstrap.Tooltip.getInstance(imgEl);
+  if (tooltip) {
+    tooltip._fixTitle();
+  }
+}
+
 /**
  * Render the rank images and tooltips for all four modes on a row.
  * @param {Element} row
  * @param {*} account
  */
 function renderRowRanks(row, account) {
-  row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
-  row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
-  row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
-  row.querySelector('.rank .premier').src = getRankImage(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier');
+  const mmExpire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
+  const wgExpire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
+  const dzExpire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
+  const premierExpire = premierExpireSuffix(account);
 
-  let mm_expire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
-  let wg_expire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
-  let dz_expire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
-  let premier_expire = premierExpireSuffix(account);
-
-  row.querySelector('.rank .mm').title = getRankName(account.rank ?? 0, account.wins ?? 0) +
-    '<br>' + (account.wins < 0 ? '?' : account.wins ?? '?') + ' wins' + mm_expire;
-  row.querySelector('.rank .wg').title = getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0) +
-    '<br>' + (account.wins_wg ?? '?') + ' wins' + wg_expire;
-  row.querySelector('.rank .dz').title = getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0) +
-    '<br>' + (account.wins_dz ?? '?') + ' wins' + dz_expire;
-  row.querySelector('.rank .premier').title = getRankName(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier') +
-    '<br>' + (account.wins_premier ?? '?') + ' wins' + premier_expire;
-
-
-  bootstrap.Tooltip.getInstance(row.querySelector('.rank .mm'))._fixTitle();
-  bootstrap.Tooltip.getInstance(row.querySelector('.rank .wg'))._fixTitle();
-  bootstrap.Tooltip.getInstance(row.querySelector('.rank .dz'))._fixTitle();
-  bootstrap.Tooltip.getInstance(row.querySelector('.rank .premier'))._fixTitle();
+  renderSingleRank(row.querySelector('.rank .mm'), account.rank, account.wins, 'mm', mmExpire, false);
+  renderSingleRank(row.querySelector('.rank .wg'), account.rank_wg, account.wins_wg, 'wg', wgExpire, false);
+  renderSingleRank(row.querySelector('.rank .dz'), account.rank_dz, account.wins_dz, 'dz', dzExpire, true);
+  renderSingleRank(row.querySelector('.rank .premier'), account.rank_premier, account.wins_premier, 'premier', premierExpire, false);
 }
 
 /**
@@ -721,13 +731,20 @@ function renderRowRanks(row, account) {
  * @param {*} account
  */
 function renderRowBanAndActions(row, account) {
-  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1)
-
+  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
   row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
-
-  // Отображаем кнопки для всех аккаунтов
   row.querySelector('.copy-code').style.display = 'inline-block';
   row.querySelector('.open-pofile').style.display = 'inline-block';
+}
+
+function updateBanText(row, account) {
+  const banEl = row.querySelector('.ban');
+  if (!banEl) return;
+  if (account.penalty_seconds > 0) {
+    banEl.innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
+    banEl.innerText = '';
+  }
 }
 
 function updateRow(row, login, account, force) {
@@ -746,13 +763,7 @@ function updateRow(row, login, account, force) {
     changed = true;
   }
 
-  if (account.penalty_seconds > 0) {
-    row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
-  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
-    // Дополнительная проверка для очистки вкладки ban/error при обновлении счетчика
-    row.querySelector('.ban').innerText = '';
-  }
-
+  updateBanText(row, account);
   return changed;
 }
 
