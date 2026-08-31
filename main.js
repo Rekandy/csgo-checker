@@ -11,10 +11,12 @@ const path = require('path');
 const { EOL } = require('os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
 const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage } = require('./helpers/gcpd_parser.js');
+const logger = require('./helpers/logger.js');
+const { parseAccountLines } = require('./helpers/importParser.js');
 // Исправление загрузки proto-файлов
 let Protos;
 try {
-    console.log('Loading proto files for csgo...');
+    logger.info('Loading proto files for csgo...');
     const protoFiles = [
         path.join(__dirname, '/protos/cstrike15_gcmessages.proto'),
         path.join(__dirname, '/protos/gcsdk_gcmessages.proto'),
@@ -24,9 +26,9 @@ try {
     // Проверяем существование файлов
     protoFiles.forEach((file, index) => {
         if (fs.existsSync(file)) {
-            console.log(`Found proto file ${index + 1}: ${file}`);
+            logger.debug('Found proto file', { index: index + 1, file });
         } else {
-            console.error(`Proto file not found: ${file}`);
+            logger.error('Proto file not found', { file });
         }
     });
     
@@ -34,9 +36,9 @@ try {
         name: 'csgo',
         protos: protoFiles
     }]);
-    console.log('Proto files loaded successfully');
+    logger.info('Proto files loaded successfully');
 } catch (error) {
-    console.error('Error loading proto files:', error);
+    logger.error('Error loading proto files', { error });
     Protos = { csgo: {} }; // Пустой объект для предотвращения ошибок
 }
 
@@ -234,7 +236,7 @@ function createWindow () {
             win.webContents.send('update:downloaded');
         });
         autoUpdater.on('error', (err) => {
-            console.log(err);
+            logger.error('Auto updater error', { op: 'autoupdate', error: err });
         });
         if (autoUpdater.autoDownload) {
             autoUpdater.checkForUpdatesAndNotify();
@@ -319,7 +321,7 @@ ipcMain.handle('encryption:setup', async () => {
         settings.set('encrypted', true);
         return true;
     } catch (error) {
-        console.log(error);
+        logger.error('Failed to enable encryption', { op: 'encrypt', error });
         return false;
     }
 });
@@ -394,7 +396,7 @@ ipcMain.handle('encryption:remove', async () => {
             settings.set('encrypted', false);
             return false; //false is success as in non encrypted
         } catch (error) {
-            console.log(error);
+            logger.error('Failed to disable encryption', { op: 'decrypt', error });
             if (typeof error != 'string') {
                 if (error.reason == 'BAD_DECRYPT') {
                     error = 'Invalid password';
@@ -434,7 +436,7 @@ async function process_check_account(username) {
 
     try {
         const res = await check_account(username, account.password, account.sharedSecret);
-        console.log(res);
+        logger.debug('Account check completed', { account: username, op: 'check' });
         for (const key in res) {
             if (Object.hasOwnProperty.call(res, key)) {
                 account[key] = res[key];
@@ -443,7 +445,7 @@ async function process_check_account(username) {
         db.set(username, account);
         return res;
     } catch (error) {
-        console.log(error);
+        logger.error('Account check failed', { account: username, op: 'check', error });
         account.error = error;
         db.set(username, account);
         return { error: error };
@@ -478,14 +480,20 @@ ipcMain.handle('accounts:import', async (event) => {
         return;
     }
     file = file.filePaths[0];
-    let accs = fs.readFileSync(file).toString().split('\n').map(x => x.trim().split(':')).filter(x => x && x.length == 2);
-    accs.forEach(acc => {
-        db.set(acc[0], {
-            password: acc[1],
-        });
+    const { accounts, skipped } = parseAccountLines(fs.readFileSync(file).toString());
+    accounts.forEach(acc => {
+        const existing = db.get(acc.username);
+        const entry = existing ? { ...existing } : {};
+        entry.password = acc.password;
+        // Preserve an existing shared secret when the imported line omits one.
+        if (acc.sharedSecret) {
+            entry.sharedSecret = acc.sharedSecret;
+        }
+        db.set(acc.username, entry);
     });
-    for (const acc of accs) {
-        process_check_account(acc[0]);
+    logger.info('Imported accounts', { op: 'import', imported: accounts.length, skipped });
+    for (const acc of accounts) {
+        process_check_account(acc.username);
         await new Promise(p => setTimeout(p, 200));
     }
 });
@@ -507,7 +515,10 @@ ipcMain.handle('accounts:export', async (event) => {
     if (file.canceled) {
         return;
     }
-    let accs = Object.entries(db.JSON()).map(x => x[0] + ':' + x[1].password).join(EOL);
+    let accs = Object.entries(db.JSON()).map(([username, data]) => {
+        const line = username + ':' + data.password;
+        return data.sharedSecret ? line + ':' + data.sharedSecret : line;
+    }).join(EOL);
     fs.writeFileSync(file.filePath, accs);
 });
 
