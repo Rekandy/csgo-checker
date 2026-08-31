@@ -7,7 +7,7 @@
 
 [![Github All Releases](https://img.shields.io/github/downloads/dumbasPL/csgo-checker/total.svg?style=for-the-badge)](https://github.com/dumbasPL/csgo-checker/releases/latest)
 
-## Checks CS2 accounts for:
+## Checks CS2 accounts for
 
 - bans (vac/overwatch/untrusted)
 - cooldowns (abandon, team damage, etc)
@@ -20,7 +20,7 @@
 Fields that are unknown or unavailable are shown as `N/A`/`Unranked` rather than
 stale CS:GO values.
 
-## Additional features:
+## Additional features
 
 - import/export form/to `user:pass` combo file
 - steam guard mobile authenticator shared secrets supported
