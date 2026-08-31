@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { EOL } = require('os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
-const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage } = require('./helpers/gcpd_parser.js');
+const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage } = require('./helpers/gcpd_parser.js');
 const logger = require('./helpers/logger.js');
 const { parseAccountLines } = require('./helpers/importParser.js');
 // Исправление загрузки proto-файлов
@@ -737,7 +737,9 @@ function check_account(username, pass, sharedSecret) {
                     const accountMainHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=accountmain`);
                     if (accountMainHtml) {
                         if (looksLikeLoginPage(accountMainHtml)) {
-                            console.log(`[${username}] GCPD accountmain returned login page, skipping`);
+                            logger.warn('GCPD accountmain returned login page, skipping', { account: username });
+                        } else if (looksLikeErrorPage(accountMainHtml)) {
+                            logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
                         } else if (looksLikeGcpdPage(accountMainHtml)) {
                             const accountData = parseAccountMain(accountMainHtml);
                             if (accountData.ok) {
@@ -770,7 +772,7 @@ function check_account(username, pass, sharedSecret) {
                                 }
                             }
                         } else {
-                            console.log(`[${username}] GCPD accountmain response not recognized as GCPD page`);
+                            logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
                         }
                     }
 
@@ -780,7 +782,9 @@ function check_account(username, pass, sharedSecret) {
                     const matchmakingHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=matchmaking`);
                     if (matchmakingHtml) {
                         if (looksLikeLoginPage(matchmakingHtml)) {
-                            console.log(`[${username}] GCPD matchmaking returned login page, skipping`);
+                            logger.warn('GCPD matchmaking returned login page, skipping', { account: username });
+                        } else if (looksLikeErrorPage(matchmakingHtml)) {
+                            logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
                         } else if (looksLikeGcpdPage(matchmakingHtml)) {
                             const mmData = parseMatchmaking(matchmakingHtml);
                             if (mmData.ok) {
@@ -824,7 +828,7 @@ function check_account(username, pass, sharedSecret) {
                                 data.last_game = new Date(lastGameMatch[1]);
                             }
                         } else {
-                            console.log(`[${username}] GCPD matchmaking response not recognized as GCPD page`);
+                            logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
                         }
                     }
 
