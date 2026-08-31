@@ -368,13 +368,15 @@ function createTagEdit(name, color = '#000000') {
  * @param {*} account account object
  * @returns {Boolean} matches? 
  */
-function execSearch(q, login, account) {
-
-  q = q.trim();
-  if (q.length == 0) {
-    return true;
-  }
-
+/**
+ * Build the list of searchable strings for an account. Pure: the returned
+ * array (including the deliberate null entries) is exactly what execSearch
+ * matches against; the search's own `v &&` guard skips the nulls.
+ * @param {String} login account login
+ * @param {*} account account object
+ * @returns {Array} searchable strings (may contain nulls)
+ */
+function buildSearchStrings(login, account) {
   let strings = [];
   strings.push(login);
   strings.push(account.name ?? null);
@@ -390,6 +392,17 @@ function execSearch(q, login, account) {
   strings.push(getRankName(account.rank ?? 0, account.wins ?? 0));
   strings.push(getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0));
   strings.push(getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0));
+  return strings;
+}
+
+function execSearch(q, login, account) {
+
+  q = q.trim();
+  if (q.length == 0) {
+    return true;
+  }
+
+  let strings = buildSearchStrings(login, account);
 
   return q.toLowerCase().split(' ').map(x => {
     return strings.find(v => v && v.toLowerCase().includes(x)) != undefined
