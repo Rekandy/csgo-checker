@@ -134,6 +134,29 @@ test('(g2) error/private profile page -> looksLikeErrorPage true', () => {
     assert.strictEqual(looksLikeGcpdPage(priv), false);
 });
 
+test('(g3) Steam generic error page (error_box) -> looksLikeErrorPage true', () => {
+    const err = '<html><body><div id="error_box"><div class="error_box_top"></div>' +
+        '<div class="sectionText">There was an error.</div></div></body></html>';
+    assert.strictEqual(looksLikeErrorPage(err), true);
+});
+
+test('(g4) valid GCPD page containing "sectionText" is NOT misclassified as error', () => {
+    // Regression: the old marker matched the bare "sectionText" substring,
+    // which also appears on legitimate Steam pages, so a valid GCPD page was
+    // wrongly treated as unavailable and its data silently dropped.
+    const mm = buildTable([
+        ['Matchmaking Mode', 'Wins', 'Skill Group'],
+        ['Premier', '321', '17000']
+    ]);
+    const html = wrap('<div class="sectionText">Personal Game Data</div>' + mm);
+    assert.strictEqual(looksLikeErrorPage(html), false);
+    assert.strictEqual(looksLikeGcpdPage(html), true);
+    const res = parseMatchmaking(html);
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.premier_rating, 17000);
+    assert.strictEqual(res.premier_wins, 321);
+});
+
 // --- (h) malformed/truncated HTML -------------------------------------------
 
 test('(h) malformed/truncated HTML -> no throw', () => {

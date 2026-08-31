@@ -414,7 +414,12 @@ function looksLikeErrorPage(html) {
          containsCI(html, 'The specified profile could not be found') ||
          containsCI(html, 'The specified profile is private') ||
          containsCI(html, 'You need a valid game license to access this page') ||
-         containsCI(html, 'sectionText'); // Steam generic error page marker
+         // Steam's generic error page wraps its message in a dedicated
+         // container (id="error_box"). Match that specific marker rather than
+         // the bare "sectionText" class, which also appears on legitimate
+         // Steam pages and would misclassify valid GCPD pages as unavailable.
+         containsCI(html, 'id="error_box"') ||
+         containsCI(html, 'error_box_top');
 }
 
 module.exports = {
