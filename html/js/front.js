@@ -697,6 +697,17 @@ function premierExpireSuffix(account) {
 }
 
 /**
+ * Build the "<br>expires ..." tooltip suffix for a mode's last-game timestamp,
+ * or '' when there is no timestamp. Mirrors the original inline expression for
+ * the mm/wg/dz modes exactly.
+ * @param {*} lastGame last-game value (timestamp/date-parsable), or falsy
+ * @returns {String}
+ */
+function expireSuffix(lastGame) {
+  return lastGame ? '<br>expires ' + formatExpireTime(new Date(lastGame)) : '';
+}
+
+/**
  * Render the rank images and tooltips for all four modes on a row.
  * @param {Element} row
  * @param {*} account
@@ -707,9 +718,9 @@ function renderRowRanks(row, account) {
   row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
   row.querySelector('.rank .premier').src = getRankImage(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier');
 
-  let mm_expire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
-  let wg_expire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
-  let dz_expire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
+  let mm_expire = expireSuffix(account.last_game);
+  let wg_expire = expireSuffix(account.last_game_wg);
+  let dz_expire = expireSuffix(account.last_game_dz);
   let premier_expire = premierExpireSuffix(account);
 
   row.querySelector('.rank .mm').title = getRankName(account.rank ?? 0, account.wins ?? 0) +
