@@ -13,6 +13,8 @@ const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanen
 const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage } = require('./helpers/gcpd_parser.js');
 const logger = require('./helpers/logger.js');
 const { parseAccountLines } = require('./helpers/importParser.js');
+const { TaskQueue } = require('./helpers/queue.js');
+const { STATUS, statusFromEresult, shouldRetry, backoffDelay } = require('./helpers/checker.js');
 // Исправление загрузки proto-файлов
 let Protos;
 try {
@@ -58,6 +60,42 @@ const GC_MSG = {
     PlayersProfile: 9128,
     ClientGCRankUpdate: 9194
 };
+
+// Retry policy for account checks. invalid_credentials and steam_guard_required
+// fail fast (see helpers/checker.js shouldRetry); everything else is retried
+// with exponential backoff + jitter up to CHECK_MAX_ATTEMPTS.
+const CHECK_MAX_ATTEMPTS = 3;
+const DEFAULT_CHECK_CONCURRENCY = 3;
+
+/**
+ * Resolve the configured concurrency for mass checks, defaulting to 3.
+ * @returns {number}
+ */
+function getCheckConcurrency() {
+    const configured = Number(settings.get('checkConcurrency'));
+    if (Number.isFinite(configured) && configured >= 1) {
+        return Math.floor(configured);
+    }
+    return DEFAULT_CHECK_CONCURRENCY;
+}
+
+// Shared bounded-concurrency queue for mass operations (import auto-check,
+// refresh-all). Rebuilt when the configured concurrency changes so at most
+// `concurrency` steam-user logons happen at once.
+let checkQueue = null;
+
+/**
+ * Get (or lazily build) the shared mass-check queue at the configured
+ * concurrency. Rebuilds if the setting changed since last use.
+ * @returns {TaskQueue}
+ */
+function getCheckQueue() {
+    const concurrency = getCheckConcurrency();
+    if (!checkQueue || checkQueue.concurrency !== concurrency) {
+        checkQueue = new TaskQueue(concurrency);
+    }
+    return checkQueue;
+}
 
 const browserWindowOptions = {
     webPreferences: {
@@ -210,6 +248,33 @@ settings.set('version', app.getVersion());
 var currently_checking = [];
 
 var mainWindowCreated = false;
+
+/**
+ * Remove a username from the currently_checking list. Centralised so every
+ * finish/error/disconnect path cleans up consistently and no account gets
+ * stuck marked 'pending'.
+ * @param {string} username
+ */
+function clearCurrentlyChecking(username) {
+    currently_checking = currently_checking.filter(x => x !== username);
+}
+
+/**
+ * Persist an account's status (new backward-compatible field) and notify the
+ * renderer. Never removes existing fields. No-op if the account is gone.
+ * @param {string} username
+ * @param {string} status one of STATUS.*
+ */
+function setAccountStatus(username, status) {
+    if (!db) return;
+    const account = db.get(username);
+    if (!account) return;
+    account.status = status;
+    db.set(username, account);
+    if (win) {
+        win.webContents.send('accounts:updated', { login: username, data: account });
+    }
+}
 
 function createWindow () {
 
@@ -428,28 +493,92 @@ ipcMain.handle('accounts:get', () => {
     return data;
 });
 
+/**
+ * Derive a STATUS from a check_account rejection. The rejection carries an
+ * `eresult` when it originated from a steam-user login error; otherwise it is a
+ * generic/transient error.
+ * @param {*} error
+ * @returns {string} a STATUS value
+ */
+function statusFromCheckError(error) {
+    if (error && typeof error === 'object' && error.eresult != null) {
+        return statusFromEresult(error.eresult);
+    }
+    return STATUS.ERROR;
+}
+
+/**
+ * Extract a human-readable message from a check_account rejection while
+ * preserving backward compatibility with the string errors the UI expects.
+ * @param {*} error
+ * @returns {string}
+ */
+function checkErrorMessage(error) {
+    if (error == null) return 'unknown error';
+    if (typeof error === 'string') return error;
+    if (typeof error === 'object' && error.message) return String(error.message);
+    return String(error);
+}
+
+/**
+ * Run a single account check with retry + exponential backoff + jitter and a
+ * hard attempt cap. Non-retryable outcomes (invalid_credentials,
+ * steam_guard_required) fail fast; rate_limited backs off longer. Never loops
+ * forever. Writes the result and a per-account status to the db.
+ * @param {string} username
+ * @returns {Promise<object>} the resolved data object, or { error, status }
+ */
 async function process_check_account(username) {
     const account = db.get(username);
     if(!account) {
         return { error: 'unable to find account' };
     }
 
-    try {
-        const res = await check_account(username, account.password, account.sharedSecret);
-        logger.debug('Account check completed', { account: username, op: 'check' });
-        for (const key in res) {
-            if (Object.hasOwnProperty.call(res, key)) {
-                account[key] = res[key];
+    setAccountStatus(username, STATUS.CHECKING);
+
+    let lastError = null;
+    let lastStatus = STATUS.ERROR;
+
+    for (let attempt = 1; attempt <= CHECK_MAX_ATTEMPTS; attempt++) {
+        try {
+            const res = await check_account(username, account.password, account.sharedSecret);
+            logger.debug('Account check completed', { account: username, op: 'check', attempt });
+            // Re-read: earlier attempts / concurrent updates may have changed it.
+            const current = db.get(username) || account;
+            for (const key in res) {
+                if (Object.hasOwnProperty.call(res, key)) {
+                    current[key] = res[key];
+                }
             }
+            current.status = STATUS.SUCCESS;
+            db.set(username, current);
+            if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+            return res;
+        } catch (error) {
+            lastError = error;
+            lastStatus = statusFromCheckError(error);
+            logger.warn('Account check attempt failed', {
+                account: username, op: 'check', attempt, status: lastStatus, error
+            });
+
+            if (shouldRetry({ attempt, maxAttempts: CHECK_MAX_ATTEMPTS, status: lastStatus })) {
+                const delay = backoffDelay({ attempt, status: lastStatus });
+                setAccountStatus(username, lastStatus);
+                await new Promise(p => setTimeout(p, delay));
+                continue;
+            }
+            break;
         }
-        db.set(username, account);
-        return res;
-    } catch (error) {
-        logger.error('Account check failed', { account: username, op: 'check', error });
-        account.error = error;
-        db.set(username, account);
-        return { error: error };
     }
+
+    logger.error('Account check failed', { account: username, op: 'check', status: lastStatus, error: lastError });
+    const message = checkErrorMessage(lastError);
+    const current = db.get(username) || account;
+    current.error = message;
+    current.status = lastStatus;
+    db.set(username, current);
+    if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+    return { error: message, status: lastStatus };
 }
 
 ipcMain.handle('ready', () => {
@@ -492,10 +621,28 @@ ipcMain.handle('accounts:import', async (event) => {
         db.set(acc.username, entry);
     });
     logger.info('Imported accounts', { op: 'import', imported: accounts.length, skipped });
+    // Route auto-checks through the bounded queue so at most `concurrency`
+    // steam-user logons happen at once instead of unbounded fire-and-forget.
+    const queue = getCheckQueue();
     for (const acc of accounts) {
-        process_check_account(acc.username);
-        await new Promise(p => setTimeout(p, 200));
+        queue.add(() => process_check_account(acc.username)).catch((err) => {
+            logger.error('Queued import check failed', { account: acc.username, op: 'import', error: err });
+        });
     }
+    // Do not block the handler on the whole batch; the queue runs async and the
+    // renderer is updated per-account via 'accounts:updated'.
+});
+
+// Refresh-all path: check every stored account through the bounded queue.
+ipcMain.handle('accounts:check_all', () => {
+    const queue = getCheckQueue();
+    const usernames = Object.keys(db.JSON());
+    for (const username of usernames) {
+        queue.add(() => process_check_account(username)).catch((err) => {
+            logger.error('Queued refresh check failed', { account: username, op: 'refresh', error: err });
+        });
+    }
+    return usernames.length;
 });
 
 ipcMain.handle('accounts:export', async (event) => {
@@ -538,6 +685,7 @@ function check_account(username, pass, sharedSecret) {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
         currently_checking.push(username);
+        setAccountStatus(username, STATUS.LOGGING_IN);
 
         let Done = false;
         let attempts = 0;
@@ -577,7 +725,7 @@ function check_account(username, pass, sharedSecret) {
             }
             clearTimeout(outerTimeout);
             if (gcTimeout) clearTimeout(gcTimeout);
-            currently_checking = currently_checking.filter(x => x !== username);
+            clearCurrentlyChecking(username);
             if (resolveData) {
                 // Convert any remaining null rank fields back to 0 for backward
                 // compatibility with the UI (which expects numbers, not null)
@@ -620,7 +768,7 @@ function check_account(username, pass, sharedSecret) {
         });
 
         steamClient.on('disconnected', (eresult, msg) => {
-            currently_checking = currently_checking.filter(x => x !== username);
+            clearCurrentlyChecking(username);
         });
 
         steamClient.on('error', (e) => {
@@ -642,20 +790,28 @@ function check_account(username, pass, sharedSecret) {
             }
             clearTimeout(outerTimeout);
             if (gcTimeout) clearTimeout(gcTimeout);
-            currently_checking = currently_checking.filter(x => x !== username);
+            clearCurrentlyChecking(username);
             if (!Done) {
                 Done = true;
-                reject(errorStr);
+                // Reject with the human-readable string as the message (UI
+                // compatibility) while carrying the eresult so the retry layer
+                // can classify the failure.
+                const rejection = new Error(errorStr);
+                rejection.eresult = e.eresult;
+                reject(rejection);
             }
         });
 
         steamClient.on('steamGuard', (domain, callback) => {
-            if (domain == null && sharedSecret && sharedSecret.length > 0) {
+            // Prefer the shared-secret TOTP path whenever a shared secret exists
+            // (works for both mobile-authenticator and, when Steam reports no
+            // email domain, app-based Steam Guard).
+            if (sharedSecret && sharedSecret.length > 0) {
                 if (steamTimeOffset == null) {
                     SteamTotp.getTimeOffset((err, offset) => {
                         if (err) {
-                            currently_checking = currently_checking.filter(x => x !== username);
-                            reject(`unable to get steam time offset`);
+                            clearCurrentlyChecking(username);
+                            reject(new Error('unable to get steam time offset'));
                             return;
                         }
                         steamTimeOffset = offset;
@@ -665,22 +821,37 @@ function check_account(username, pass, sharedSecret) {
                 }
                 callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
             } else if (!win) {
-                currently_checking = currently_checking.filter(x => x !== username);
-                reject(`steam guard missing`);
+                clearCurrentlyChecking(username);
+                const err = new Error('steam guard missing');
+                err.eresult = 63; // classify as steam_guard_required (non-retryable)
+                reject(err);
             } else {
+                setAccountStatus(username, STATUS.STEAM_GUARD_REQUIRED);
                 win.webContents.send('steam:steamguard', username);
-                ipcMain.once('steam:steamguard:response', async (event, code) => {
+                // Scope the response to THIS username so concurrent Steam Guard
+                // prompts never deliver one account's code to another's login.
+                // The renderer still replies on the shared channel with (code,
+                // username); we ignore responses meant for other accounts.
+                const responseHandler = (event, code, respondedUsername) => {
+                    if (respondedUsername != null && respondedUsername !== username) {
+                        return; // not for us - leave the listener in place
+                    }
+                    ipcMain.removeListener('steam:steamguard:response', responseHandler);
                     if (!code) {
-                        currently_checking = currently_checking.filter(x => x !== username);
-                        reject(`steam guard missing`);
+                        clearCurrentlyChecking(username);
+                        const err = new Error('steam guard missing');
+                        err.eresult = 63; // steam_guard_required (non-retryable)
+                        reject(err);
                     } else {
                         callback(code);
                     }
-                });
+                };
+                ipcMain.on('steam:steamguard:response', responseHandler);
             }
         });
 
         steamClient.on('webSession', (sessionID, cookies) => {
+            setAccountStatus(username, STATUS.LOGGED_IN);
             sleep(1000).then(async () => {
                 if (Done) return;
                 const cookieHeader = cookies.join('; ') + ';';
@@ -917,22 +1088,32 @@ function check_account(username, pass, sharedSecret) {
                             return;
                         }
                         let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
-                        for (let i = 0; i < CMsgClientWelcome.outofdate_subscribed_caches.length; i++) {
-                            let outofdate_cache = CMsgClientWelcome.outofdate_subscribed_caches[i];
-                            for (let j = 0; j < outofdate_cache.objects.length; j++) {
-                                let cache_object = outofdate_cache.objects[j];
+                        // protoDecode returns {} on failure - guard every field.
+                        const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
+                            ? CMsgClientWelcome.outofdate_subscribed_caches
+                            : [];
+                        for (let i = 0; i < outofdateCaches.length; i++) {
+                            let outofdate_cache = outofdateCaches[i];
+                            const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
+                            for (let j = 0; j < cacheObjects.length; j++) {
+                                let cache_object = cacheObjects[j];
+                                if (!cache_object || !Array.isArray(cache_object.object_data)) {
+                                    continue;
+                                }
                                 if (cache_object.object_data.length == 0) {
                                     continue;
                                 }
                                 switch (cache_object.type_id) {
                                     case 7: {
                                         let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                        if (CSOEconGameAccountClient.elevated_state >= 4) {
-                                            data.prime = true;
-                                            console.log(`[${username}] Has Prime status (elevated_state=${CSOEconGameAccountClient.elevated_state}, preliminary)`);
-                                        } else {
-                                            data.prime = false;
-                                            console.log(`[${username}] No Prime status (elevated_state=${CSOEconGameAccountClient.elevated_state}, preliminary)`);
+                                        // elevated_state is only a PRELIMINARY hint. The authoritative
+                                        // Prime determination is the level/XP heuristic applied last in
+                                        // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
+                                        // handlers - do not let this overwrite a heuristic result that
+                                        // has already been established (lvl > 1 or exp > 0).
+                                        if (!((data.lvl > 1) || (data.exp > 0))) {
+                                            data.prime = CSOEconGameAccountClient.elevated_state >= 4;
+                                            console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
                                         }
 
                                         sleep(1000).then(function() {
@@ -980,11 +1161,16 @@ function check_account(username, pass, sharedSecret) {
                                 steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
                             });
                         } else {
-                            data.penalty_reason = steamClient.limitations.communityBanned ? 'Community ban' : msg.penalty_reason > 0 ? penalty_reason_string(msg.penalty_reason) : msg.vac_banned ? 'VAC' : 0;
-                            data.penalty_seconds = msg.vac_banned || steamClient.limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason) ? -1 : msg.penalty_seconds > 0 ? (Math.floor(Date.now() / 1000) + msg.penalty_seconds) : 0;
-                            data.wins = msg.vac_banned ? -1 : attempts < 5 ? msg.ranking.wins : 0;
-                            data.rank = msg.vac_banned ? -1 : attempts < 5 ? msg.ranking.rank_id : 0;
-                            data.name = steamClient.accountInfo.name;
+                            // Guard every field: protoDecode may return {} and
+                            // msg.ranking may be absent when attempts hit the cap.
+                            const limitations = steamClient.limitations || {};
+                            const ranking = msg.ranking || {};
+                            const haveRanking = attempts < 5 && msg.ranking != null;
+                            data.penalty_reason = limitations.communityBanned ? 'Community ban' : msg.penalty_reason > 0 ? penalty_reason_string(msg.penalty_reason) : msg.vac_banned ? 'VAC' : 0;
+                            data.penalty_seconds = msg.vac_banned || limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason) ? -1 : msg.penalty_seconds > 0 ? (Math.floor(Date.now() / 1000) + msg.penalty_seconds) : 0;
+                            data.wins = msg.vac_banned ? -1 : haveRanking ? (ranking.wins || 0) : 0;
+                            data.rank = msg.vac_banned ? -1 : haveRanking ? (ranking.rank_id || 0) : 0;
+                            data.name = (steamClient.accountInfo && steamClient.accountInfo.name) || data.name || username;
                             data.lvl = msg.player_level || data.lvl;
                             data.steamid = steamClient.steamID.getSteamID64();
                             data.error = null;

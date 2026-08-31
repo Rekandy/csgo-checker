@@ -899,9 +899,13 @@ document.addEventListener('DOMContentLoaded', () => {
   })
 
   let code_sent = false;
+  // Username the Steam Guard prompt is currently shown for. Echoed back with
+  // the response so the main process can match the code to the right account
+  // when several accounts are being checked concurrently.
+  let steamGuardUsername = null;
   steamGuardModal_div.addEventListener('hide.bs.modal', e => {
     if (!code_sent) {
-      ipcRenderer.send('steam:steamguard:response', null);
+      ipcRenderer.send('steam:steamguard:response', null, steamGuardUsername);
     }
     code_sent = false;
   })
@@ -909,12 +913,13 @@ document.addEventListener('DOMContentLoaded', () => {
   steamGuardModal_div.querySelector('button.btn.btn-primary').addEventListener('click', async e => {
     e.preventDefault();
     let code = steamGuardModal_div.querySelector('#steam-guard').value.trim();
-    ipcRenderer.send('steam:steamguard:response', code.length == 0 ? null : code);
+    ipcRenderer.send('steam:steamguard:response', code.length == 0 ? null : code, steamGuardUsername);
     code_sent = true;
     steamGuardModal.hide();
   })
 
   ipcRenderer.on('steam:steamguard', (_, username) => {
+    steamGuardUsername = username;
     steamGuardModal_div.querySelector('#steam-guard-username').innerText = username;
     steamGuardModal.show();
   });
@@ -941,17 +946,10 @@ document.addEventListener('DOMContentLoaded', () => {
   })
 
   document.querySelector('#reloadall').addEventListener('click', async e => {
-    const accounts = await ipcRenderer.invoke('accounts:get');
-    for (const login in accounts) {
-      if (Object.hasOwnProperty.call(accounts, login)) {
-        ipcRenderer.invoke('accounts:check', login).then(ret => {
-          if (ret.error) {
-            showToast(login + ': ' + ret.error, 'danger');
-          }
-        });
-        await new Promise(p => setTimeout(p, 200));
-      }
-    }
+    // Route the refresh-all through the main process bounded queue so at most
+    // `concurrency` steam-user logons run at once. Per-account results arrive
+    // via the 'accounts:updated' IPC event.
+    await ipcRenderer.invoke('accounts:check_all');
     updateAccounts();
   });
 
