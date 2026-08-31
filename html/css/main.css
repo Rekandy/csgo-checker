@@ -42,7 +42,7 @@ main {
   height: 26px;
 }
 
-#main-table tr td:last-child, .prime, .level, .login, .steam_name, .rank {
+#main-table tr td:last-child, .prime, .level, .login, .steam-name, .rank {
   white-space: nowrap;
   width: 1%;
 }

@@ -564,7 +564,7 @@ function FindOrCreateRow(login, createCallback) {
  * @param {*} account
  */
 function renderRowTags(row, account) {
-  row.querySelector('.steam_name').innerText = account.name || '?';
+  row.querySelector('.steam-name').innerText = account.name || '?';
   let tags = row.querySelector('.tags')
   while (tags.firstChild) {
     tags.firstChild.remove();
