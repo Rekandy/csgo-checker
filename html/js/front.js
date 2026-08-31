@@ -542,6 +542,191 @@ function FindOrCreateRow(login, createCallback) {
  * @param {Boolean} force force update
  * @returns {Boolean} account data changed
  */
+/**
+ * Render the steam name and tag badges for a row.
+ * @param {Element} row
+ * @param {*} account
+ */
+function renderRowTags(row, account) {
+  row.querySelector('.steam_name').innerText = account.name || '?';
+  let tags = row.querySelector('.tags')
+  while (tags.firstChild) {
+    tags.firstChild.remove();
+  }
+  if (account.tags) {
+    account.tags.forEach(tag => {
+      let color = tags_cache[tag];
+      if (!color) {
+        color = '#000000';
+      }
+      let badge = createBadge(tag, color);
+      tags.appendChild(badge);
+    });
+  }
+}
+
+/**
+ * Render the profile level, rank badge, and XP progress cell for a row.
+ * @param {Element} row
+ * @param {*} account
+ */
+function renderRowLevel(row, account) {
+  // Обновляем шкалу прогресса опыта
+  let expProgress = row.querySelector('.level .progress-bar');
+  let expText = row.querySelector('.level .exp-value');
+  let levelValue = row.querySelector('.level .level-value');
+  let rankIcon = row.querySelector('.level .rank-icon');
+
+  // Обновляем уровень профиля и значок ранга.
+  // CS2 profile levels start at 1, so a value of 0/null/undefined means the
+  // level is unknown/unavailable (never fetched or the data source returned
+  // nothing). Render 'N/A' instead of a misleading "0" with a fake rank icon.
+  let level = account.lvl ?? 0;
+  let levelKnown = Number.isFinite(level) && level >= 1;
+  levelValue.innerText = levelKnown ? level : 'N/A';
+
+  if (levelKnown) {
+      // Определяем номер значка ранга (от 1 до 40)
+      let rankNumber = Math.min(Math.max(level, 1), 40);
+      rankIcon.src = `img/ranks/${rankNumber}.png`;
+      rankIcon.style.display = '';
+  } else {
+      // Hide the rank badge entirely rather than implying rank 1.
+      rankIcon.style.display = 'none';
+  }
+
+  // Обновляем прогресс опыта. Only meaningful when the level is known;
+  // otherwise show 'N/A' rather than a stale "0/5000".
+  if (levelKnown && account.exp !== undefined && account.exp !== null) {
+      let expPercent = (account.exp / 5000) * 100;
+      expProgress.style.width = `${expPercent}%`;
+      expProgress.setAttribute('aria-valuenow', account.exp);
+      expText.innerText = account.exp;
+  } else if (levelKnown) {
+      expProgress.style.width = '0%';
+      expProgress.setAttribute('aria-valuenow', 0);
+      expText.innerText = '0';
+  } else {
+      expProgress.style.width = '0%';
+      expProgress.setAttribute('aria-valuenow', 0);
+      expText.innerText = 'N/A';
+  }
+}
+
+/**
+ * Apply the Prime icon color for a row based on rank presence / verification.
+ * @param {Element} row
+ * @param {String} login
+ * @param {*} account
+ */
+function renderRowPrime(row, login, account) {
+  // Отладочный код для проверки значений рангов
+  console.log('Account:', login, 'Ranks:', {
+    rank: account.rank,
+    rank_wg: account.rank_wg,
+    rank_dz: account.rank_dz,
+    rank_premier: account.rank_premier
+  });
+
+  // Проверяем, есть ли хотя бы один ненулевой ранг
+  const hasNonZeroRank = account.rank !== 0 || account.rank_wg !== 0 || account.rank_dz !== 0 || account.rank_premier !== 0;
+  console.log('Has non-zero rank:', hasNonZeroRank);
+
+  // Применяем стили к значку Prime
+  const primeImg = row.querySelector('.prime img.prime-icon');
+  if (account.steamid) {
+    if (hasNonZeroRank) {
+      // Зеленый цвет для аккаунтов с Prime
+      primeImg.className = 'prime-icon prime-green';
+      console.log('Applied green color to Prime icon');
+    } else {
+      // Красный цвет для аккаунтов без Prime
+      primeImg.className = 'prime-icon prime-red';
+      console.log('Applied red color to Prime icon');
+    }
+  } else {
+    // Белый цвет для непроверенных аккаунтов
+    primeImg.className = 'prime-icon';
+    console.log('Applied white color to Prime icon');
+  }
+}
+
+/**
+ * Build the premier "last match" tooltip suffix for a row, or '' when there is
+ * no premier date.
+ * @param {*} account
+ * @returns {String}
+ */
+function premierExpireSuffix(account) {
+  // Используем новый формат даты
+  if (!account.premier_date) {
+    return '';
+  }
+  console.log('Premier date object for ' + account.name + ':', account.premier_date);
+
+  let d = account.premier_date;
+
+  // Создаем дату последней игры
+  let lastGameDate = new Date(d.year, d.month - 1, d.day, d.hours, d.minutes, d.seconds);
+  console.log('Last game date for ' + account.name + ':', lastGameDate);
+
+  // Форматируем дату последней игры
+  let day = lastGameDate.getDate().toString().padStart(2, '0');
+  let month = (lastGameDate.getMonth() + 1).toString().padStart(2, '0');
+  let year = lastGameDate.getFullYear();
+  let hours = lastGameDate.getHours().toString().padStart(2, '0');
+  let minutes = lastGameDate.getMinutes().toString().padStart(2, '0');
+
+  return `<br>last match ${day}.${month}.${year} ${hours}:${minutes}`;
+}
+
+/**
+ * Render the rank images and tooltips for all four modes on a row.
+ * @param {Element} row
+ * @param {*} account
+ */
+function renderRowRanks(row, account) {
+  row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
+  row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
+  row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
+  row.querySelector('.rank .premier').src = getRankImage(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier');
+
+  let mm_expire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
+  let wg_expire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
+  let dz_expire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
+  let premier_expire = premierExpireSuffix(account);
+
+  row.querySelector('.rank .mm').title = getRankName(account.rank ?? 0, account.wins ?? 0) +
+    '<br>' + (account.wins < 0 ? '?' : account.wins ?? '?') + ' wins' + mm_expire;
+  row.querySelector('.rank .wg').title = getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0) +
+    '<br>' + (account.wins_wg ?? '?') + ' wins' + wg_expire;
+  row.querySelector('.rank .dz').title = getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0) +
+    '<br>' + (account.wins_dz ?? '?') + ' wins' + dz_expire;
+  row.querySelector('.rank .premier').title = getRankName(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier') +
+    '<br>' + (account.wins_premier ?? '?') + ' wins' + premier_expire;
+
+
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .mm'))._fixTitle();
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .wg'))._fixTitle();
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .dz'))._fixTitle();
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .premier'))._fixTitle();
+}
+
+/**
+ * Render the ban/error cell and the per-account action buttons for a row.
+ * @param {Element} row
+ * @param {*} account
+ */
+function renderRowBanAndActions(row, account) {
+  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1)
+
+  row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
+
+  // Отображаем кнопки для всех аккаунтов
+  row.querySelector('.copy-code').style.display = 'inline-block';
+  row.querySelector('.open-pofile').style.display = 'inline-block';
+}
+
 function updateRow(row, login, account, force) {
   let changed = false;
   if (!equal(account_cache[login], account) || force) {
@@ -549,144 +734,11 @@ function updateRow(row, login, account, force) {
 
     row.className = account.pending ? 'pending' : '';
 
-    row.querySelector('.steam_name').innerText = account.name || '?';
-    let tags = row.querySelector('.tags')
-    while (tags.firstChild) {
-      tags.firstChild.remove();
-    }
-    if (account.tags) {
-      account.tags.forEach(tag => {
-        let color = tags_cache[tag];
-        if (!color) {
-          color = '#000000';
-        }
-        let badge = createBadge(tag, color);
-        tags.appendChild(badge);
-      });
-    }
-    
-    // Обновляем шкалу прогресса опыта
-    let expProgress = row.querySelector('.level .progress-bar');
-    let expText = row.querySelector('.level .exp-value');
-    let levelValue = row.querySelector('.level .level-value');
-    let rankIcon = row.querySelector('.level .rank-icon');
-    
-    // Обновляем уровень профиля и значок ранга.
-    // CS2 profile levels start at 1, so a value of 0/null/undefined means the
-    // level is unknown/unavailable (never fetched or the data source returned
-    // nothing). Render 'N/A' instead of a misleading "0" with a fake rank icon.
-    let level = account.lvl ?? 0;
-    let levelKnown = Number.isFinite(level) && level >= 1;
-    levelValue.innerText = levelKnown ? level : 'N/A';
-
-    if (levelKnown) {
-        // Определяем номер значка ранга (от 1 до 40)
-        let rankNumber = Math.min(Math.max(level, 1), 40);
-        rankIcon.src = `img/ranks/${rankNumber}.png`;
-        rankIcon.style.display = '';
-    } else {
-        // Hide the rank badge entirely rather than implying rank 1.
-        rankIcon.style.display = 'none';
-    }
-
-    // Обновляем прогресс опыта. Only meaningful when the level is known;
-    // otherwise show 'N/A' rather than a stale "0/5000".
-    if (levelKnown && account.exp !== undefined && account.exp !== null) {
-        let expPercent = (account.exp / 5000) * 100;
-        expProgress.style.width = `${expPercent}%`;
-        expProgress.setAttribute('aria-valuenow', account.exp);
-        expText.innerText = account.exp;
-    } else if (levelKnown) {
-        expProgress.style.width = '0%';
-        expProgress.setAttribute('aria-valuenow', 0);
-        expText.innerText = '0';
-    } else {
-        expProgress.style.width = '0%';
-        expProgress.setAttribute('aria-valuenow', 0);
-        expText.innerText = 'N/A';
-    }
-    
-    // Отладочный код для проверки значений рангов
-    console.log('Account:', login, 'Ranks:', {
-      rank: account.rank,
-      rank_wg: account.rank_wg,
-      rank_dz: account.rank_dz,
-      rank_premier: account.rank_premier
-    });
-    
-    // Проверяем, есть ли хотя бы один ненулевой ранг
-    const hasNonZeroRank = account.rank !== 0 || account.rank_wg !== 0 || account.rank_dz !== 0 || account.rank_premier !== 0;
-    console.log('Has non-zero rank:', hasNonZeroRank);
-    
-    // Применяем стили к значку Prime
-    const primeImg = row.querySelector('.prime img.prime-icon');
-    if (account.steamid) {
-      if (hasNonZeroRank) {
-        // Зеленый цвет для аккаунтов с Prime
-        primeImg.className = 'prime-icon prime-green';
-        console.log('Applied green color to Prime icon');
-      } else {
-        // Красный цвет для аккаунтов без Prime
-        primeImg.className = 'prime-icon prime-red';
-        console.log('Applied red color to Prime icon');
-      }
-    } else {
-      // Белый цвет для непроверенных аккаунтов
-      primeImg.className = 'prime-icon';
-      console.log('Applied white color to Prime icon');
-    }
-
-    row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
-    row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
-    row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
-    row.querySelector('.rank .premier').src = getRankImage(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier');
-
-    let mm_expire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
-    let wg_expire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
-    let dz_expire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
-    let premier_expire = '';
-    // Используем новый формат даты
-    if (account.premier_date) {
-      console.log('Premier date object for ' + account.name + ':', account.premier_date);
-      
-      let d = account.premier_date;
-      
-      // Создаем дату последней игры
-      let lastGameDate = new Date(d.year, d.month - 1, d.day, d.hours, d.minutes, d.seconds);
-      console.log('Last game date for ' + account.name + ':', lastGameDate);
-      
-      // Форматируем дату последней игры
-      let day = lastGameDate.getDate().toString().padStart(2, '0');
-      let month = (lastGameDate.getMonth() + 1).toString().padStart(2, '0');
-      let year = lastGameDate.getFullYear();
-      let hours = lastGameDate.getHours().toString().padStart(2, '0');
-      let minutes = lastGameDate.getMinutes().toString().padStart(2, '0');
-      
-      premier_expire = `<br>last match ${day}.${month}.${year} ${hours}:${minutes}`;
-    }
-
-    row.querySelector('.rank .mm').title = getRankName(account.rank ?? 0, account.wins ?? 0) +
-      '<br>' + (account.wins < 0 ? '?' : account.wins ?? '?') + ' wins' + mm_expire;
-    row.querySelector('.rank .wg').title = getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0) +
-      '<br>' + (account.wins_wg ?? '?') + ' wins' + wg_expire;
-    row.querySelector('.rank .dz').title = getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0) +
-      '<br>' + (account.wins_dz ?? '?') + ' wins' + dz_expire;
-    row.querySelector('.rank .premier').title = getRankName(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier') +
-      '<br>' + (account.wins_premier ?? '?') + ' wins' + premier_expire;
-
-
-    bootstrap.Tooltip.getInstance(row.querySelector('.rank .mm'))._fixTitle();
-    bootstrap.Tooltip.getInstance(row.querySelector('.rank .wg'))._fixTitle();
-    bootstrap.Tooltip.getInstance(row.querySelector('.rank .dz'))._fixTitle();
-    bootstrap.Tooltip.getInstance(row.querySelector('.rank .premier'))._fixTitle();
-
-    row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1)
-
-    row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
-
-    // Отображаем кнопки для всех аккаунтов
-    row.querySelector('.copy-code').style.display = 'inline-block';
-    row.querySelector('.open-pofile').style.display = 'inline-block';
+    renderRowTags(row, account);
+    renderRowLevel(row, account);
+    renderRowPrime(row, login, account);
+    renderRowRanks(row, account);
+    renderRowBanAndActions(row, account);
 
     changed = true;
   }
