@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const isDev = require('electron-is-dev');
 const EncryptedStorage = require('./EncryptedStorage.js');
@@ -140,6 +140,46 @@ settings.sync(); //makes empty file on first run
  */
 var db = null;
 
+/**
+ * Apply defensive navigation guards to a BrowserWindow's webContents. Denies
+ * in-page navigation to anything other than the file that is already loaded
+ * (our bundled html), and refuses to open new windows for anything other than
+ * http/https links, which are instead handed off to the OS browser via
+ * shell.openExternal. This keeps the renderer from being redirected to, or
+ * spawning, arbitrary external/file:// content even if markup is compromised.
+ * @param {Electron.WebContents} webContents
+ */
+function applyNavigationGuards(webContents) {
+    webContents.on('will-navigate', (event, url) => {
+        const current = webContents.getURL();
+        // Allow navigations that stay on the currently loaded document
+        // (e.g. in-page reloads / hash changes). Deny everything else.
+        if (url !== current) {
+            event.preventDefault();
+            logger.warn('Blocked navigation attempt', { op: 'security', url });
+        }
+    });
+
+    webContents.setWindowOpenHandler(({ url }) => {
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch (_) {
+            logger.warn('Blocked window open with invalid url', { op: 'security', url });
+            return { action: 'deny' };
+        }
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+            shell.openExternal(url).catch((err) => {
+                logger.error('Failed to open external url', { op: 'security', error: err });
+            });
+        } else {
+            logger.warn('Blocked window open for non-http scheme', { op: 'security', scheme: parsed.protocol });
+        }
+        // Never let the renderer open a new Electron window itself.
+        return { action: 'deny' };
+    });
+}
+
 function beforeWindowInputHandler(window, event, input) {
     if (input.control && input.shift && input.key.toLowerCase() === 'i') {
         window.webContents.openDevTools();
@@ -169,6 +209,7 @@ async function openDB() {
                         show: false
                     });
                     promptWindow.removeMenu();
+                    applyNavigationGuards(promptWindow.webContents);
                     promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
                         promptWindow.webContents.send('password_dialog:init', error_message);
                     })
@@ -287,6 +328,7 @@ function createWindow () {
         minHeight: 625
     });
     win.removeMenu();
+    applyNavigationGuards(win.webContents);
     win.loadFile(__dirname + '/html/index.html');
     win.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(win, event, input));
     win.webContents.once('did-finish-load', () => {
@@ -352,6 +394,7 @@ ipcMain.handle('encryption:setup', async () => {
             show: false
         });
         promptWindow.removeMenu();
+        applyNavigationGuards(promptWindow.webContents);
         promptWindow.loadFile(__dirname + '/html/encryption_setup.html');
         promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
         promptWindow.once('ready-to-show', () => promptWindow.show())
@@ -417,6 +460,7 @@ ipcMain.handle('encryption:remove', async () => {
                 show: false
             });
             promptWindow.removeMenu();
+            applyNavigationGuards(promptWindow.webContents);
             promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
                 promptWindow.webContents.send('password_dialog:init', error_message, 'Remove encryption');
             })
@@ -1299,5 +1343,11 @@ function check_account(username, pass, sharedSecret) {
 }
 
 process.on('uncaughtException', err => {
-  console.error('uncaughtException', err);
+  logger.error('uncaughtException', { op: 'process', error: err });
+})
+
+process.on('unhandledRejection', reason => {
+  // Route through the redacting logger so any secrets carried on the rejection
+  // (passwords, shared secrets, cookies) are stripped before being written.
+  logger.error('unhandledRejection', { op: 'process', error: reason });
 })
