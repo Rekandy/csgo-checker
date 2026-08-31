@@ -882,11 +882,11 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       updateAccounts();
     }
-    let promise = ipcRenderer.invoke('accounts:check', login);
+    let promise = ipcRenderer.invoke('accounts:check', username.value);
     updateAccounts();
     let ret = await promise;
     if (ret.error) {
-      showToast(login + ': ' + ret.error, 'danger');
+      showToast(username.value + ': ' + ret.error, 'danger');
     }
     updateAccounts();
   });
