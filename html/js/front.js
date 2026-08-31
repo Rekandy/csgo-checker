@@ -401,6 +401,77 @@ function execSearch(q, login, account) {
  * @type {HTMLElement}
  */
 let LastClickedColumn;
+
+/**
+ * Advance the sort direction one step in the none -> DESC -> ASC -> none cycle.
+ * @param {String} cur current sort direction ('none' | 'DESC' | 'ASC')
+ * @returns {String} next sort direction
+ */
+function nextSortDir(cur) {
+  switch (cur) {
+    case 'none': return 'DESC';
+    case 'DESC': return 'ASC';
+    default: return 'none'; // same as case 'ASC'
+  }
+}
+
+// Per-column value transforms applied (on a shallow clone) before sorting, so
+// certain columns sort by a derived/normalized value. Columns not listed here
+// sort by their raw value. Each transform mutates the provided clone in place.
+const SORT_COLUMN_TRANSFORMS = {
+  //combine bans and errors
+  ban: clone => { clone.ban = clone.error ?? formatPenalty(clone.penalty_reason ?? '?', clone.penalty_seconds ?? -1); },
+  // Специальная обработка для уровня
+  lvl: clone => { clone.lvl = clone.lvl ?? 0; },
+  rank: (clone, col) => { clone[col] = Math.max(clone[col], 0); }, //clap -1 to 0 so sorting works correctly
+  rank_dz: (clone, col) => { clone[col] = Math.max(clone[col], 0); },
+  rank_wg: (clone, col) => { clone[col] = Math.max(clone[col], 0); },
+  rank_premier: (clone, col) => { clone[col] = Math.max(clone[col], 0); },
+  prime: clone => { clone.prime = clone.prime ? 1 : 0; } //convert to integer
+};
+
+/**
+ * Compute the ordered list of account logins for the given column and sort
+ * direction, applying any per-column value transform first.
+ * @param {String} col_name column data name
+ * @param {String} new_sort_dir 'none' | 'DESC' | 'ASC'
+ * @returns {String[]} ordered logins
+ */
+function computeSortOrder(col_name, new_sort_dir) {
+  //special case as username is they key
+  if (col_name == "username") {
+    let usernames = Object.keys(account_cache);
+    if (new_sort_dir != 'none') {
+      usernames.sort();
+    }
+    if (new_sort_dir == 'DESC') {
+      usernames.reverse();
+    }
+    return usernames;
+  }
+
+  let accounts = Object.entries(account_cache);
+  const transform = SORT_COLUMN_TRANSFORMS[col_name];
+  if (transform) {
+    accounts = accounts.map(a => {
+      let clone = Object.assign({}, a[1]);
+      transform(clone, col_name);
+      return [a[0], clone];
+    });
+  }
+  if (new_sort_dir != 'none') {
+    accounts.sort((a, b) => {
+      a = a[1];
+      b = b[1];
+      return a[col_name] > b[col_name] ? 1 : -1;
+    });
+  }
+  if (new_sort_dir == 'DESC') {
+    accounts.reverse();
+  }
+  return accounts.map(a => a[0]);
+}
+
 /**
  * Handle sorting
  * @param {HTMLElement} elem clicked element
@@ -420,77 +491,9 @@ function handleSort(elem, increment = true) {
     return;
   }
 
-  let new_sort_dir = cur_sort_dir;
-  if (increment) {
-    switch (cur_sort_dir) {
-      case 'none':
-        new_sort_dir = 'DESC';
-        break;
-      case 'DESC':
-        new_sort_dir = 'ASC';
-        break;
-      default: // same as case 'ASC'
-        new_sort_dir = 'none';
-        break;
-    }
-  }
+  let new_sort_dir = increment ? nextSortDir(cur_sort_dir) : cur_sort_dir;
 
-  let new_order;
-
-  //special case as username is they key
-  if (col_name == "username") {
-    let usernames = Object.keys(account_cache);
-    if (new_sort_dir != 'none') {
-      usernames.sort();
-    }
-    if (new_sort_dir == 'DESC') {
-      usernames.reverse();
-    }
-    new_order = usernames;
-  } else {
-    let accounts = Object.entries(account_cache);
-    //combine bans and errors
-    if (col_name == 'ban') {
-      accounts = accounts.map(a => {
-        let clone = Object.assign({}, a[1]);
-        clone.ban = clone.error ?? formatPenalty(clone.penalty_reason ?? '?', clone.penalty_seconds ?? -1);
-        return [a[0], clone];
-      });
-    }
-    // Специальная обработка для уровня
-    else if (col_name == 'lvl') {
-      accounts = accounts.map(a => {
-        let clone = Object.assign({}, a[1]);
-        clone.lvl = clone.lvl ?? 0;
-        return [a[0], clone];
-      });
-    }
-    else if (col_name == 'rank' || col_name == 'rank_dz' || col_name == 'rank_wg' || col_name == 'rank_premier') {
-      accounts = accounts.map(a => {
-        let clone = Object.assign({}, a[1]);
-        clone[col_name] = Math.max(clone[col_name], 0); //clap -1 to 0 so sorting works correctly
-        return [a[0], clone];
-      });
-    }
-    else if (col_name == 'prime') {
-      accounts = accounts.map(a => {
-        let clone = Object.assign({}, a[1]);
-        clone.prime = clone.prime ? 1 : 0; //convert to integer
-        return [a[0], clone];
-      });
-    }
-    if (new_sort_dir != 'none') {
-      accounts.sort((a, b) => {
-        a = a[1];
-        b = b[1];
-        return a[col_name] > b[col_name] ? 1 : -1;
-      });
-    }
-    if (new_sort_dir == 'DESC') {
-      accounts.reverse();
-    }
-    new_order = accounts.map(a => a[0]);
-  }
+  let new_order = computeSortOrder(col_name, new_sort_dir);
 
   document.querySelectorAll('#main-table th.sortable').forEach(e => e.dataset.sortDir = 'none');
   elem.dataset.sortDir = new_sort_dir;
