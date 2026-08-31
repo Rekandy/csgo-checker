@@ -537,24 +537,39 @@ function updateRow(row, login, account, force) {
     let levelValue = row.querySelector('.level .level-value');
     let rankIcon = row.querySelector('.level .rank-icon');
     
-    // Обновляем уровень профиля и значок ранга
+    // Обновляем уровень профиля и значок ранга.
+    // CS2 profile levels start at 1, so a value of 0/null/undefined means the
+    // level is unknown/unavailable (never fetched or the data source returned
+    // nothing). Render 'N/A' instead of a misleading "0" with a fake rank icon.
     let level = account.lvl ?? 0;
-    levelValue.innerText = level;
-    
-    // Определяем номер значка ранга (от 1 до 40)
-    let rankNumber = Math.min(Math.max(level, 1), 40);
-    rankIcon.src = `img/ranks/${rankNumber}.png`;
-    
-    // Обновляем прогресс опыта
-    if (account.exp !== undefined) {
+    let levelKnown = Number.isFinite(level) && level >= 1;
+    levelValue.innerText = levelKnown ? level : 'N/A';
+
+    if (levelKnown) {
+        // Определяем номер значка ранга (от 1 до 40)
+        let rankNumber = Math.min(Math.max(level, 1), 40);
+        rankIcon.src = `img/ranks/${rankNumber}.png`;
+        rankIcon.style.display = '';
+    } else {
+        // Hide the rank badge entirely rather than implying rank 1.
+        rankIcon.style.display = 'none';
+    }
+
+    // Обновляем прогресс опыта. Only meaningful when the level is known;
+    // otherwise show 'N/A' rather than a stale "0/5000".
+    if (levelKnown && account.exp !== undefined && account.exp !== null) {
         let expPercent = (account.exp / 5000) * 100;
         expProgress.style.width = `${expPercent}%`;
         expProgress.setAttribute('aria-valuenow', account.exp);
         expText.innerText = account.exp;
-    } else {
+    } else if (levelKnown) {
         expProgress.style.width = '0%';
         expProgress.setAttribute('aria-valuenow', 0);
         expText.innerText = '0';
+    } else {
+        expProgress.style.width = '0%';
+        expProgress.setAttribute('aria-valuenow', 0);
+        expText.innerText = 'N/A';
     }
     
     // Отладочный код для проверки значений рангов
