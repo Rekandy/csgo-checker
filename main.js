@@ -1382,6 +1382,55 @@ function check_account(username, pass, sharedSecret) {
                         }
             };
 
+            // Data-driven descriptor for ClientGCRankUpdate rank_type_id
+            // handling. Each entry names the rank/wins fields the mode writes,
+            // the console.log label, and two behavioral flags:
+            //   vacCascade         - after assigning, if data.wins === -1 (VAC)
+            //                        force this mode's rank/wins to -1;
+            //   premierExpiredGuard - only overwrite the rank field when it is
+            //                        not already the expired premier sentinel -1
+            //                        (rank_id carries the RATING for premier;
+            //                        the expired -1 is derived from the GCPD path
+            //                        and must not be clobbered here).
+            // Mirrors the original four repeated if-blocks exactly.
+            const GC_RANK_UPDATE_TYPES = {
+                6:  { rank: 'rank',         wins: 'wins',         label: 'Competitive rank' },
+                7:  { rank: 'rank_wg',      wins: 'wins_wg',      label: 'Wingman rank',     vacCascade: true },
+                10: { rank: 'rank_dz',      wins: 'wins_dz',      label: 'Danger Zone rank', vacCascade: true },
+                11: { rank: 'rank_premier', wins: 'wins_premier', label: 'Premier rank',     vacCascade: true, premierExpiredGuard: true }
+            };
+
+            // Apply a single ClientGCRankUpdate ranking entry to `data` using
+            // the descriptor table. Assignment is UNCONDITIONAL when an entry
+            // exists (an EXPIRED rank arrives as rank_id 0 with wins > 0, which
+            // the frontend reads as expired via `rank==0 && wins>=10`); undefined
+            // is normalized to 0 so we never write undefined.
+            const applyRankUpdateEntry = (ranking) => {
+                const spec = GC_RANK_UPDATE_TYPES[ranking.rank_type_id];
+                if (!spec) return;
+                const rankId = ranking.rank_id ?? 0;
+                const rankWins = ranking.wins ?? 0;
+
+                data[spec.wins] = rankWins;
+                if (spec.premierExpiredGuard) {
+                    // Do not clobber an expired premier sentinel (-1) already
+                    // set by the GCPD path, which has the wins signal to tell
+                    // expired from never-ranked.
+                    if (data[spec.rank] !== -1) {
+                        data[spec.rank] = rankId;
+                    }
+                } else {
+                    data[spec.rank] = rankId;
+                }
+
+                console.log(`[${username}] ${spec.label}: ${data[spec.rank]}, wins: ${data[spec.wins]}`);
+
+                if (spec.vacCascade && data.wins === -1) { // vac banned
+                    data[spec.wins] = -1;
+                    data[spec.rank] = -1;
+                }
+            };
+
             // GC_MSG.ClientGCRankUpdate (msg 9194)
             const handleClientGCRankUpdate = (appid, payload) => {
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
@@ -1391,53 +1440,7 @@ function check_account(username, pass, sharedSecret) {
                         }
                         for (const ranking of msg.rankings) {
                             if (!ranking) continue;
-                            // Assign UNCONDITIONALLY when a ranking entry exists:
-                            // an EXPIRED rank arrives as rank_id 0 (falsy) with
-                            // wins > 0, and the frontend reads `rank==0 && wins>=10`
-                            // as expired for mm/wg/dz. Normalize undefined to 0 so
-                            // we never write undefined into the data object.
-                            const rankId = ranking.rank_id ?? 0;
-                            const rankWins = ranking.wins ?? 0;
-                            if (ranking.rank_type_id == 6) { // competitive
-                                data.wins = rankWins;
-                                data.rank = rankId;
-                                console.log(`[${username}] Competitive rank: ${data.rank}, wins: ${data.wins}`);
-                            }
-                            if (ranking.rank_type_id == 7) { // wingman
-                                data.wins_wg = rankWins;
-                                data.rank_wg = rankId;
-                                console.log(`[${username}] Wingman rank: ${data.rank_wg}, wins: ${data.wins_wg}`);
-                                if (data.wins === -1) { // vac banned
-                                    data.wins_wg = -1;
-                                    data.rank_wg = -1;
-                                }
-                            }
-                            if (ranking.rank_type_id == 10) { // dangerzone
-                                data.wins_dz = rankWins;
-                                data.rank_dz = rankId;
-                                console.log(`[${username}] Danger Zone rank: ${data.rank_dz}, wins: ${data.wins_dz}`);
-                                if (data.wins === -1) { // vac banned
-                                    data.wins_dz = -1;
-                                    data.rank_dz = -1;
-                                }
-                            }
-                            if (ranking.rank_type_id == 11) { // premier
-                                // For premier, rank_id carries the RATING itself.
-                                // Rating 0 => unranked/none (frontend shows
-                                // premier_none). The expired premier sentinel (-1)
-                                // is derived from the GCPD path, which has the wins
-                                // signal needed to tell expired from never-ranked;
-                                // do not clobber an expired -1 already set there.
-                                data.wins_premier = rankWins;
-                                if (data.rank_premier !== -1) {
-                                    data.rank_premier = rankId;
-                                }
-                                console.log(`[${username}] Premier rank: ${data.rank_premier}, wins: ${data.wins_premier}`);
-                                if (data.wins === -1) { // vac banned
-                                    data.wins_premier = -1;
-                                    data.rank_premier = -1;
-                                }
-                            }
+                            applyRankUpdateEntry(ranking);
                         }
 
                         // If we have steamid and at least one rank has been set, we can finish
