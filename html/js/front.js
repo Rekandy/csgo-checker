@@ -10,6 +10,47 @@ let account_cache = {};
 let tags_cache = {};
 let encrypted = false;
 
+// Image-name prefixes per rank type (under img/skillgroups/).
+const RANK_IMAGE_PREFIXES = {
+  mm: 'skillgroup',
+  wg: 'wingman',
+  dz: 'dangerzone',
+  premier: 'premier'
+};
+
+// Premier rating buckets, in order. Each entry maps a [min, max] inclusive
+// rating range to the image suffix number and the label range shown in the
+// tooltip. max === Infinity is the open-ended top bucket (30000+).
+const PREMIER_BUCKETS = [
+  { min: 1, max: 4999, image: '1', label: '1-4999' },
+  { min: 5000, max: 9999, image: '2', label: '5000-9999' },
+  { min: 10000, max: 14999, image: '3', label: '10000-14999' },
+  { min: 15000, max: 19999, image: '4', label: '15000-19999' },
+  { min: 20000, max: 24999, image: '5', label: '20000-24999' },
+  { min: 25000, max: 29999, image: '6', label: '25000-29999' },
+  { min: 30000, max: Infinity, image: '7', label: '30000+' }
+];
+
+/**
+ * Find the premier bucket for a rating, or null if the rating is not a positive
+ * in-range value.
+ * @param {Number} rank premier rating
+ * @returns {{min:Number, max:Number, image:String, label:String}|null}
+ */
+function findPremierBucket(rank) {
+  return PREMIER_BUCKETS.find(b => rank >= b.min && rank <= b.max) || null;
+}
+
+/**
+ * True when a premier rating value represents the unranked/none state (empty
+ * cell, null/undefined, or 0).
+ * @param {Number} rank
+ * @returns {Boolean}
+ */
+function isPremierUnranked(rank) {
+  return rank === null || rank === undefined || rank === 0 || rank === '';
+}
+
 /**
  * Get correct image name for given rank
  * @param {Number} rank ranking
@@ -18,52 +59,37 @@ let encrypted = false;
  * @returns {String}
  */
 function getRankImage(rank, wins, type) {
-  let prefix = 'img/skillgroups/';
-  switch (type) {
-    case 'mm': prefix += 'skillgroup'; break;
-    case 'wg': prefix += 'wingman'; break;
-    case 'dz': prefix += 'dangerzone'; break;
-    case 'premier': prefix += 'premier'; break; // Use new premier images
-  }
-  
+  const prefix = 'img/skillgroups/' + (RANK_IMAGE_PREFIXES[type] ?? '');
+
   if (type === 'premier') {
     // Для Premier используем ранги на основе рейтинга
-    
+
     // Проверяем на истекший ранг (-1)
     if (rank === -1) {
       console.log('Premier expired rank detected (-1)');
       return prefix + '_expired.svg'; // Истекший ранг
     }
     // Проверяем на пустую ячейку таблицы или неранжированный статус
-    else if (rank === null || rank === undefined || rank === 0 || rank === '') {
+    if (isPremierUnranked(rank)) {
       return prefix + '_none.svg'; // Неранжированный
-    } else if (rank >= 1 && rank <= 4999) {
-      return prefix + '1.svg'; // 1-4999
-    } else if (rank >= 5000 && rank <= 9999) {
-      return prefix + '2.svg'; // 5000-9999
-    } else if (rank >= 10000 && rank <= 14999) {
-      return prefix + '3.svg'; // 10000-14999
-    } else if (rank >= 15000 && rank <= 19999) {
-      return prefix + '4.svg'; // 15000-19999
-    } else if (rank >= 20000 && rank <= 24999) {
-      return prefix + '5.svg'; // 20000-24999
-    } else if (rank >= 25000 && rank <= 29999) {
-      return prefix + '6.svg'; // 25000-29999
-    } else if (rank >= 30000) {
-      return prefix + '7.svg'; // 30000+
     }
-  } else {
-    // Для других режимов используем стандартную логику
-    if (rank <= 0) {
-      rank = 0;
+    const bucket = findPremierBucket(rank);
+    if (bucket) {
+      return prefix + bucket.image + '.svg';
     }
-    // rank may arrive as a number or a numeric string from stored data; normalize
-    // before the zero check so expired-rank detection (rank 0 with >= 10 wins) holds.
-    if (Number(rank) === 0 && wins >= 10) {
-      return prefix + '_expired.svg';
-    }
-    return prefix + rank + '.svg';
+    return undefined;
   }
+
+  // Для других режимов используем стандартную логику
+  if (rank <= 0) {
+    rank = 0;
+  }
+  // rank may arrive as a number or a numeric string from stored data; normalize
+  // before the zero check so expired-rank detection (rank 0 with >= 10 wins) holds.
+  if (Number(rank) === 0 && wins >= 10) {
+    return prefix + '_expired.svg';
+  }
+  return prefix + rank + '.svg';
 }
 
 /**
@@ -79,64 +105,67 @@ function getRankImage(rank, wins, type) {
  * @param {'mm' | 'wg' | 'dz' | 'premier'} type rank type (optional)
  * @returns {String} rank name
  */
+// Competitive (mm) skill-group names keyed by rank id.
+const MM_RANK_NAMES = {
+  1: "Silver 1",
+  2: "Silver 2",
+  3: "Silver 3",
+  4: "Silver 4",
+  5: "Silver Elite",
+  6: "Silver Elite Master",
+  7: "Gold Nova 1",
+  8: "Gold Nova 2",
+  9: "Gold Nova 3",
+  10: "Gold Nova Master",
+  11: "Master Guardian 1",
+  12: "Master Guardian 2",
+  13: "Master Guardian Elite",
+  14: "Distinguished Master Guardian",
+  15: "Legendary Eagle",
+  16: "Legendary Eagle Master",
+  17: "Supreme Master First Class",
+  18: "Global Elite CS GO"
+};
+
+/**
+ * Build the Premier rank name for a rating.
+ * @param {Number} rank premier rating
+ * @returns {String}
+ */
+function getPremierRankName(rank) {
+  // Проверяем на истекший ранг (-1)
+  if (rank === -1) {
+    return "Premier Rating: Expired";
+  }
+  // Проверяем на пустую ячейку таблицы или неранжированный статус
+  if (isPremierUnranked(rank)) {
+    return "Unranked";
+  }
+  const bucket = findPremierBucket(rank);
+  if (bucket) {
+    return `Premier Rating: ${rank} (${bucket.label})`;
+  }
+  return `Premier Rating: ${rank}`;
+}
+
 function getRankName(rank, wins, type) {
   // Если это Premier ранг, используем специальную логику
   if (type === 'premier') {
-    // Проверяем на истекший ранг (-1)
-    if (rank === -1) {
-      return "Premier Rating: Expired";
-    }
-    // Проверяем на пустую ячейку таблицы или неранжированный статус
-    else if (rank === null || rank === undefined || rank === 0 || rank === '') {
-      return "Unranked";
-    } else if (rank >= 1 && rank <= 4999) {
-      return `Premier Rating: ${rank} (1-4999)`;
-    } else if (rank >= 5000 && rank <= 9999) {
-      return `Premier Rating: ${rank} (5000-9999)`;
-    } else if (rank >= 10000 && rank <= 14999) {
-      return `Premier Rating: ${rank} (10000-14999)`;
-    } else if (rank >= 15000 && rank <= 19999) {
-      return `Premier Rating: ${rank} (15000-19999)`;
-    } else if (rank >= 20000 && rank <= 24999) {
-      return `Premier Rating: ${rank} (20000-24999)`;
-    } else if (rank >= 25000 && rank <= 29999) {
-      return `Premier Rating: ${rank} (25000-29999)`;
-    } else if (rank >= 30000) {
-      return `Premier Rating: ${rank} (30000+)`;
-    }
-    return `Premier Rating: ${rank}`;
+    return getPremierRankName(rank);
   }
-  
+
   // Для других режимов используем стандартную логику
   if (rank <= 0) {
     rank = 0;
   }
-  switch (rank) {
-    case 0:
-      if (wins >= 10) {
-        return "Expired";
-      }
-      return "Unranked";
-    case 1: return "Silver 1";
-    case 2: return "Silver 2";
-    case 3: return "Silver 3";
-    case 4: return "Silver 4";
-    case 5: return "Silver Elite";
-    case 6: return "Silver Elite Master";
-    case 7: return "Gold Nova 1";
-    case 8: return "Gold Nova 2";
-    case 9: return "Gold Nova 3";
-    case 10: return "Gold Nova Master";
-    case 11: return "Master Guardian 1";
-    case 12: return "Master Guardian 2";
-    case 13: return "Master Guardian Elite";
-    case 14: return "Distinguished Master Guardian";
-    case 15: return "Legendary Eagle";
-    case 16: return "Legendary Eagle Master";
-    case 17: return "Supreme Master First Class";
-    case 18: return "Global Elite CS GO";
-    default: return `Unknown(${rank})`;
+  if (rank === 0) {
+    return wins >= 10 ? "Expired" : "Unranked";
   }
+  // Match the original strict `switch (rank)` semantics: only an exact numeric
+  // rank id maps to a name; anything else (incl. numeric strings) is Unknown.
+  return Object.prototype.hasOwnProperty.call(MM_RANK_NAMES, rank) && typeof rank === 'number'
+    ? MM_RANK_NAMES[rank]
+    : `Unknown(${rank})`;
 }
 
 /**
@@ -145,32 +174,35 @@ function getRankName(rank, wins, type) {
  * @param {Number} wins number of wins
  * @returns {String} rank name
  */
+// Danger Zone rank names keyed by rank id.
+const DZ_RANK_NAMES = {
+  1: "Lab Rat I",
+  2: "Lab Rat II",
+  3: "Sprinting Hare I",
+  4: "Sprinting Hare II",
+  5: "Wild Scout I",
+  6: "Wild Scout II",
+  7: "Wild Scout Elite",
+  8: "Hunter Fox I",
+  9: "Hunter Fox II",
+  10: "Hunter Fox Elite",
+  11: "Timber Wolf",
+  12: "Ember Wolf",
+  13: "Wildfire Wolf",
+  14: "The Howling Alpha"
+};
+
  function getDZRankName(rank, wins) {
   if (rank <= 0) {
     rank = 0;
   }
-  switch (rank) {
-    case 0:
-      if (wins >= 1) {
-        return "Expired or Unranked";
-      }
-      return "Unranked";
-    case 1: return "Lab Rat I";
-    case 2: return "Lab Rat II";
-    case 3: return "Sprinting Hare I";
-    case 4: return "Sprinting Hare II";
-    case 5: return "Wild Scout I";
-    case 6: return "Wild Scout II";
-    case 7: return "Wild Scout Elite";
-    case 8: return "Hunter Fox I";
-    case 9: return "Hunter Fox II";
-    case 10: return "Hunter Fox Elite";
-    case 11: return "Timber Wolf";
-    case 12: return "Ember Wolf";
-    case 13: return "Wildfire Wolf";
-    case 14: return "The Howling Alpha";
-    default: return `Unknown(${rank})`;
+  if (rank === 0) {
+    return wins >= 1 ? "Expired or Unranked" : "Unranked";
   }
+  // Match the original strict `switch (rank)` semantics.
+  return Object.prototype.hasOwnProperty.call(DZ_RANK_NAMES, rank) && typeof rank === 'number'
+    ? DZ_RANK_NAMES[rank]
+    : `Unknown(${rank})`;
 }
 
 /**
