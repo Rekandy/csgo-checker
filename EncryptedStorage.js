@@ -103,122 +103,150 @@ class EncryptedStorage {
 
     this.storage = {};
 
-    if (!this.options.newData) {
-      // File existence check
-      let stats;
-      try {
-        stats = fs.statSync(filePath);
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          /* File doesn't exist */
-          this.iv = crypto.randomBytes(16).toString('hex');
-          this.salt = generateSalt(12);
+    if (this.options.newData) {
+      // Brand-new database seeded from caller-supplied data.
+      this._initNewData(password, options.newData);
+      return;
+    }
 
-          deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
-            try {
-              this.derivedKey = derivedKey;
-              this.sync();
-              this.emit('loaded');
-            } catch (error) {
-              this.emit('error', error);
-            }
-          });
-          return;
-        } else if (err.code === 'EACCES') {
-          throw new Error(`Cannot access path "${filePath}".`);
-        } else {
-          // Other error
-          throw new Error(`Error while checking for existence of path "${filePath}": ${err}`);
-        }
-      }
-      /* File exists */
-      try {
-        fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
-      } catch (err) {
-        throw new Error(`Cannot read & write on path "${filePath}". Check permissions!`);
-      }
-      if (stats.size > 0) {
-        // Read and parse asynchronously via a microtask so that any failure is
-        // reported through the 'error' event (consistent with the decryption
-        // path) rather than thrown from the constructor. Crucially, this path
-        // NEVER writes to disk, so a wrong password / corrupted / truncated
-        // file can never overwrite or truncate the existing data.
-        let data;
-        try {
-          data = fs.readFileSync(filePath);
-        } catch (err) {
-          Promise.resolve().then(() => this.emit('error', err));
-          return;
-        }
-
-        let input_data;
-        try {
-          if (!validateJSON(data)) {
-            throw new Error('Given filePath is not empty and its content is not valid JSON.');
-          }
-          input_data = JSON.parse(data);
-          if (!input_data.iv || !input_data.salt || !input_data.data) {
-            throw new Error('Invalid file');
-          }
-        } catch (err) {
-          Promise.resolve().then(() => this.emit('error', err));
-          return;
-        }
-
-        this.iv = input_data.iv;
-        this.salt = input_data.salt;
-
-        deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
-          try {
-            this.derivedKey = derivedKey;
-
-            const decryptTool = crypto.createDecipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
-            let decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
-            decryptedData += decryptTool.final("utf8");
-
-            if (validateJSON(decryptedData)) {
-              this.storage = JSON.parse(decryptedData);
-            }
-            this.emit('loaded');
-          } catch (error) {
-            // Decryption failed (BAD_DECRYPT / wrong password / corrupted
-            // ciphertext / invalid JSON). Do NOT write anything; just report.
-            this.emit('error', error);
-          }
-        }).catch(error => {
-          this.emit('error', error);
-        });
+    // File existence check
+    let stats;
+    try {
+      stats = fs.statSync(filePath);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        /* File doesn't exist */
+        this._initFreshDatabase(password, { sync: true });
+        return;
+      } else if (err.code === 'EACCES') {
+        throw new Error(`Cannot access path "${filePath}".`);
       } else {
-        // Zero-byte / empty existing file: treat as a loadable-empty database.
-        // Generate fresh iv/salt and derive the key so the DB is usable, but do
-        // not write until the caller performs a sync.
-        this.iv = crypto.randomBytes(16).toString('hex');
-        this.salt = generateSalt(12);
-
-        deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
-          this.derivedKey = derivedKey;
-          this.emit('loaded');
-        }).catch(error => {
-          this.emit('error', error);
-        });
+        // Other error
+        throw new Error(`Error while checking for existence of path "${filePath}": ${err}`);
       }
     }
-    else {
-      this.iv = crypto.randomBytes(16).toString('hex');
-      this.salt = generateSalt(12);
+    /* File exists */
+    try {
+      fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+    } catch (err) {
+      throw new Error(`Cannot read & write on path "${filePath}". Check permissions!`);
+    }
+    if (stats.size > 0) {
+      this._loadExistingFile(filePath, password);
+    } else {
+      // Zero-byte / empty existing file: treat as a loadable-empty database.
+      // Generate fresh iv/salt and derive the key so the DB is usable, but do
+      // not write until the caller performs a sync.
+      this._initFreshDatabase(password, { sync: false });
+    }
+  }
 
-      deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
-        try {
-          this.derivedKey = derivedKey;
-          this.storage = options.newData;
-          this.sync();
-          this.emit('loaded');
-        } catch (error) {
-          this.emit('error', error);
-        }
-      });
+  /**
+   * Seed a brand-new database from caller-supplied plaintext data and persist
+   * it. Any derivation/sync error is reported via the 'error' event.
+   * @param {string} password
+   * @param {object} newData
+   * @private
+   */
+  _initNewData(password, newData) {
+    this.iv = crypto.randomBytes(16).toString('hex');
+    this.salt = generateSalt(12);
+
+    deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
+      try {
+        this.derivedKey = derivedKey;
+        this.storage = newData;
+        this.sync();
+        this.emit('loaded');
+      } catch (error) {
+        this.emit('error', error);
+      }
+    });
+  }
+
+  /**
+   * Initialize a fresh, empty database with new iv/salt and a derived key.
+   * When `opts.sync` is true (missing-file case) the empty DB is written to
+   * disk; when false (zero-byte existing file) nothing is written until the
+   * caller performs a sync. Errors are reported via the 'error' event.
+   * @param {string} password
+   * @param {{sync: boolean}} opts
+   * @private
+   */
+  _initFreshDatabase(password, opts) {
+    this.iv = crypto.randomBytes(16).toString('hex');
+    this.salt = generateSalt(12);
+
+    deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
+      try {
+        this.derivedKey = derivedKey;
+        if (opts && opts.sync) this.sync();
+        this.emit('loaded');
+      } catch (error) {
+        this.emit('error', error);
+      }
+    }).catch(error => {
+      this.emit('error', error);
+    });
+  }
+
+  /**
+   * Load and decrypt an existing, non-empty storage file.
+   *
+   * This path NEVER writes to disk, so a wrong password / corrupted / truncated
+   * file can never overwrite or truncate the existing data. Any failure (read
+   * error, invalid JSON, missing fields, decryption failure) is reported via
+   * the 'error' event instead of throwing from the constructor.
+   * @param {string} filePath
+   * @param {string} password
+   * @private
+   */
+  _loadExistingFile(filePath, password) {
+    let data;
+    try {
+      data = fs.readFileSync(filePath);
+    } catch (err) {
+      Promise.resolve().then(() => this.emit('error', err));
+      return;
     }
 
+    let input_data;
+    try {
+      if (!validateJSON(data)) {
+        throw new Error('Given filePath is not empty and its content is not valid JSON.');
+      }
+      input_data = JSON.parse(data);
+      if (!input_data.iv || !input_data.salt || !input_data.data) {
+        throw new Error('Invalid file');
+      }
+    } catch (err) {
+      Promise.resolve().then(() => this.emit('error', err));
+      return;
+    }
+
+    this.iv = input_data.iv;
+    this.salt = input_data.salt;
+
+    deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
+      try {
+        this.derivedKey = derivedKey;
+
+        const decryptTool = crypto.createDecipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
+        let decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
+        decryptedData += decryptTool.final("utf8");
+
+        if (validateJSON(decryptedData)) {
+          this.storage = JSON.parse(decryptedData);
+        }
+        this.emit('loaded');
+      } catch (error) {
+        // Decryption failed (BAD_DECRYPT / wrong password / corrupted
+        // ciphertext / invalid JSON). Do NOT write anything; just report.
+        this.emit('error', error);
+      }
+    }).catch(error => {
+      this.emit('error', error);
+    });
   }
 
   sync() {
