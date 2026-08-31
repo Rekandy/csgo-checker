@@ -64,6 +64,34 @@ module.exports = [
     }
   },
 
+  // front.js consumes the pure rank/format helpers defined in
+  // html/js/rankFormat.js (loaded as a <script> before front.js in
+  // html/index.html). Because renderer scripts share one global scope but
+  // eslint lints each file independently, declare those cross-file names as
+  // globals for front.js only - NOT for rankFormat.js, which actually defines
+  // them (that would trip no-redeclare).
+  {
+    files: ["html/js/front.js"],
+    languageOptions: {
+      globals: {
+        RANK_IMAGE_PREFIXES: "readonly",
+        PREMIER_BUCKETS: "readonly",
+        findPremierBucket: "readonly",
+        isPremierUnranked: "readonly",
+        getRankImage: "readonly",
+        MM_RANK_NAMES: "readonly",
+        getPremierRankName: "readonly",
+        getRankName: "readonly",
+        DZ_RANK_NAMES: "readonly",
+        getDZRankName: "readonly",
+        countdown: "readonly",
+        formatPenalty: "readonly",
+        formatExpireTime: "readonly",
+        getContrastYIQ: "readonly"
+      }
+    }
+  },
+
   // Pragmatic relaxations applied across all linted files. These keep the
   // existing code green while still catching real problems.
   {
@@ -78,6 +106,21 @@ module.exports = [
       // wrapper; relaxing these avoids rewriting working code for style alone.
       "no-prototype-builtins": "off",
       "no-useless-catch": "off"
+    }
+  },
+
+  // html/js/rankFormat.js defines pure rank/format helpers that are consumed by
+  // front.js at runtime (both are plain renderer <script>s sharing one global
+  // scope). eslint lints each file in isolation and so cannot see the
+  // cross-file use, which would surface every helper as an unused var. This is
+  // an artifact of the script-scope-globals architecture, not dead code, so
+  // no-unused-vars is turned off for this one file. This must come AFTER the
+  // pragmatic-relaxations block so it wins. This is NOT a rule relaxation to
+  // hide complexity - the helpers are exercised by front.js.
+  {
+    files: ["html/js/rankFormat.js"],
+    rules: {
+      "no-unused-vars": "off"
     }
   }
 ];
