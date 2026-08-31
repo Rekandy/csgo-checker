@@ -65,7 +65,7 @@ function validateJSON(fileContent) {
     throw new Error('Given filePath is not empty and its content is not valid JSON.');
   }
   return true;
-};
+}
 
 class EncryptedStorage {
 
