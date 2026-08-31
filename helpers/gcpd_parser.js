@@ -178,15 +178,26 @@ function findColumn(header, needles) {
  * never throws and never fabricates values.
  *
  * @param {string} html - Full HTML of the GCPD matchmaking page
- * @returns {{ok: boolean, premier_rating: number, premier_wins: number, wingman_rank: number, wingman_wins: number, cooldown_expires_unix: number, cooldown_reason: string}}
+ * The *_present flags indicate whether a row for that mode actually existed in
+ * the matchmaking table. They let the caller distinguish "no data at all"
+ * (present === false, leave the cache untouched) from "the mode is expired /
+ * unranked" (present === true with rating/rank 0). An EXPIRED mode is a present
+ * row whose rating/rank is 0 while wins indicate prior play - the caller maps
+ * that to the frontend's expired sentinels (premier -> -1, wingman -> rank 0
+ * with wins retained).
+ *
+ * @param {string} html - Full HTML of the GCPD matchmaking page
+ * @returns {{ok: boolean, premier_rating: number, premier_wins: number, premier_present: boolean, wingman_rank: number, wingman_wins: number, wingman_present: boolean, cooldown_expires_unix: number, cooldown_reason: string}}
  */
 function parseMatchmaking(html) {
   const result = {
     ok: false,
     premier_rating: 0,
     premier_wins: 0,
+    premier_present: false,
     wingman_rank: 0,
     wingman_wins: 0,
+    wingman_present: false,
     cooldown_expires_unix: 0,
     cooldown_reason: ''
   };
@@ -261,11 +272,19 @@ function parseMatchmaking(html) {
         const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
         if (skill < 0 && wins < 0) continue;
 
+        // The row exists for this mode: mark it present so the caller can tell
+        // "expired/unranked (rating 0)" apart from "no data". Record a parsed
+        // rating/rank of 0 too (skill === 0), which is exactly the expired /
+        // unranked case - only skip writing when the skill column was absent
+        // (skill < 0). Wins are written whenever the column was present
+        // (wins >= 0), including 0.
         if (containsCI(row[0], 'Premier')) {
-          if (skill > 0) result.premier_rating = skill;
+          result.premier_present = true;
+          if (skill >= 0) result.premier_rating = skill;
           if (wins >= 0) result.premier_wins = wins;
         } else if (containsCI(row[0], 'Wingman')) {
-          if (skill > 0) result.wingman_rank = skill;
+          result.wingman_present = true;
+          if (skill >= 0) result.wingman_rank = skill;
           if (wins >= 0) result.wingman_wins = wins;
         }
       }

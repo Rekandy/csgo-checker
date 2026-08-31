@@ -53,6 +53,52 @@ test('(a) normal matchmaking page parses Premier + Wingman rating/wins', () => {
     assert.strictEqual(res.wingman_wins, 42);
 });
 
+test('(a2) present flags true when Premier + Wingman rows exist', () => {
+    const mm = buildTable([
+        ['Matchmaking Mode', 'Wins', 'Ties', 'Losses', 'Skill Group', 'Last Match'],
+        ['Premier', '1234', '0', '0', '18500', '2024-01-01 00:00:00 GMT'],
+        ['Wingman', '42', '0', '0', '11', '2024-01-01 00:00:00 GMT']
+    ]);
+    const res = parseMatchmaking(wrap(mm));
+    assert.strictEqual(res.premier_present, true);
+    assert.strictEqual(res.wingman_present, true);
+});
+
+test('(a3) absent mode rows leave present flags false', () => {
+    // Only a cooldown table, no matchmaking mode rows.
+    const cd = buildTable([
+        ['Cooldown Expiration', 'Cooldown Level'],
+        ['Permanent', '7']
+    ]);
+    const res = parseMatchmaking(wrap(cd));
+    assert.strictEqual(res.premier_present, false);
+    assert.strictEqual(res.wingman_present, false);
+});
+
+test('(a4) expired Premier: present row, rating 0, prior wins', () => {
+    // Expired premier rating: row exists, Skill Group cell is 0 but there are
+    // recorded wins. The caller maps this to rank_premier = -1.
+    const mm = buildTable([
+        ['Matchmaking Mode', 'Wins', 'Skill Group'],
+        ['Premier', '57', '0']
+    ]);
+    const res = parseMatchmaking(wrap(mm));
+    assert.strictEqual(res.premier_present, true);
+    assert.strictEqual(res.premier_rating, 0);
+    assert.strictEqual(res.premier_wins, 57);
+});
+
+test('(a5) expired Wingman: present row, rank 0, prior wins', () => {
+    const mm = buildTable([
+        ['Matchmaking Mode', 'Wins', 'Skill Group'],
+        ['Wingman', '15', '0']
+    ]);
+    const res = parseMatchmaking(wrap(mm));
+    assert.strictEqual(res.wingman_present, true);
+    assert.strictEqual(res.wingman_rank, 0);
+    assert.strictEqual(res.wingman_wins, 15);
+});
+
 // --- (b) localized headers --------------------------------------------------
 
 test('(b) localized German/Russian headers still parse', () => {
