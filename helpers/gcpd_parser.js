@@ -172,6 +172,57 @@ function findColumn(header, needles) {
 }
 
 /**
+ * Detect a permanent-cooldown row: a non-timestamp first cell paired with a
+ * cooldown level of at least 1 (e.g. "Permanent", "7").
+ * @param {string[]} row - parsed cooldown row cells
+ * @returns {boolean}
+ */
+function isPermanentCooldownRow(row) {
+  const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
+  return Boolean(row[0]) && hasLevel;
+}
+
+/**
+ * Decide whether a future cooldown timestamp is the new earliest cooldown to
+ * record on `result`.
+ * @param {number} ts - candidate cooldown timestamp (Unix seconds)
+ * @param {object} result - running matchmaking result
+ * @param {number} nowSeconds - current Unix time in seconds
+ * @returns {boolean}
+ */
+function isEarlierFutureCooldown(ts, result, nowSeconds) {
+  if (ts <= nowSeconds) return false;
+  return result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix;
+}
+
+/**
+ * Apply a single cooldown row to the running matchmaking `result`. Mirrors the
+ * original inline behavior exactly: permanent indicators win, otherwise the
+ * earliest future timestamp is tracked.
+ * @param {string[]} row - parsed cooldown row cells
+ * @param {object} result - matchmaking result object (mutated in place)
+ * @param {number} nowSeconds - current Unix time in seconds
+ */
+function applyCooldownRow(row, result, nowSeconds) {
+  const ts = parseGcpdTimestamp(row[0]);
+  if (ts === 0) {
+    // Non-timestamp row: check for permanent cooldown indicator
+    if (isPermanentCooldownRow(row)) {
+      result.cooldown_expires_unix = COOLDOWN_NEVER;
+      result.cooldown_reason = 'Competitive cooldown';
+    }
+    return;
+  }
+  // Skip if already permanently banned
+  if (result.cooldown_expires_unix === COOLDOWN_NEVER) return;
+  // Only track future cooldowns, pick the earliest
+  if (isEarlierFutureCooldown(ts, result, nowSeconds)) {
+    result.cooldown_expires_unix = ts;
+    result.cooldown_reason = 'Competitive cooldown';
+  }
+}
+
+/**
  * Parse a cooldown table into the running matchmaking `result`. Tracks the
  * earliest future cooldown and a permanent (COOLDOWN_NEVER) cooldown, matching
  * the original inline behavior exactly.
@@ -183,24 +234,7 @@ function parseCooldownTable(tbl, result, nowSeconds) {
   for (let i = 1; i < tbl.length; i++) {
     const row = tbl[i];
     if (row.length === 0) continue;
-    const ts = parseGcpdTimestamp(row[0]);
-    if (ts === 0) {
-      // Non-timestamp row: check for permanent cooldown indicator
-      const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
-      if (row[0] && hasLevel) {
-        result.cooldown_expires_unix = COOLDOWN_NEVER;
-        result.cooldown_reason = 'Competitive cooldown';
-      }
-      continue;
-    }
-    // Skip if already permanently banned
-    if (result.cooldown_expires_unix === COOLDOWN_NEVER) continue;
-    // Only track future cooldowns, pick the earliest
-    if (ts > nowSeconds &&
-        (result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix)) {
-      result.cooldown_expires_unix = ts;
-      result.cooldown_reason = 'Competitive cooldown';
-    }
+    applyCooldownRow(row, result, nowSeconds);
   }
 }
 
@@ -212,6 +246,40 @@ function parseCooldownTable(tbl, result, nowSeconds) {
  * @param {Array<Array<string>>} tbl - parsed matchmaking-mode table
  * @param {object} result - matchmaking result object (mutated in place)
  */
+/**
+ * Extract an integer value from a row at the given column, returning -1 when
+ * the column is absent (col < 0) or the row is too short. Matches the original
+ * inline guard exactly.
+ * @param {string[]} row - parsed row cells
+ * @param {number} col - column index (or < 0 when the column was not found)
+ * @returns {number} parsed value, or -1 when unavailable
+ */
+function cellIntAt(row, col) {
+  return (col >= 0 && row.length > col) ? toInt(row[col], -1) : -1;
+}
+
+/**
+ * Apply a parsed matchmaking-mode row to the running `result`. The row is
+ * matched to Premier or Wingman by its first cell; skill/wins are written only
+ * when their column was present (value >= 0), which preserves the expired /
+ * unranked (value 0) case exactly.
+ * @param {string[]} row - parsed matchmaking-mode row cells
+ * @param {number} skill - parsed skill/rating value, or -1 when unavailable
+ * @param {number} wins - parsed wins value, or -1 when unavailable
+ * @param {object} result - matchmaking result object (mutated in place)
+ */
+function applyMatchmakingModeRow(row, skill, wins, result) {
+  if (containsCI(row[0], 'Premier')) {
+    result.premier_present = true;
+    if (skill >= 0) result.premier_rating = skill;
+    if (wins >= 0) result.premier_wins = wins;
+  } else if (containsCI(row[0], 'Wingman')) {
+    result.wingman_present = true;
+    if (skill >= 0) result.wingman_rank = skill;
+    if (wins >= 0) result.wingman_wins = wins;
+  }
+}
+
 function parseMatchmakingModeTable(tbl, result) {
   const header = tbl[0];
   // Skip map-specific tables (localized map header keywords)
@@ -232,8 +300,8 @@ function parseMatchmakingModeTable(tbl, result) {
   for (let i = 1; i < tbl.length; i++) {
     const row = tbl[i];
     if (row.length === 0) continue;
-    const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
-    const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
+    const skill = cellIntAt(row, skillCol);
+    const wins = cellIntAt(row, winsCol);
     if (skill < 0 && wins < 0) continue;
 
     // The row exists for this mode: mark it present so the caller can tell
@@ -242,15 +310,7 @@ function parseMatchmakingModeTable(tbl, result) {
     // unranked case - only skip writing when the skill column was absent
     // (skill < 0). Wins are written whenever the column was present
     // (wins >= 0), including 0.
-    if (containsCI(row[0], 'Premier')) {
-      result.premier_present = true;
-      if (skill >= 0) result.premier_rating = skill;
-      if (wins >= 0) result.premier_wins = wins;
-    } else if (containsCI(row[0], 'Wingman')) {
-      result.wingman_present = true;
-      if (skill >= 0) result.wingman_rank = skill;
-      if (wins >= 0) result.wingman_wins = wins;
-    }
+    applyMatchmakingModeRow(row, skill, wins, result);
   }
 }
 
