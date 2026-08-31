@@ -1351,7 +1351,9 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = profile.player_level;
                                 }
                                 if (profile.player_cur_xp && profile.player_cur_xp > 0) {
-                                    // Convert raw absolute XP to XP-within-level
+                                    // Convert raw absolute XP to XP-within-level.
+                                    // 327680000 is the intentional CS2 XP base constant (well below
+                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
                                     const XP_BASE = 327680000;
                                     const XP_PER_LEVEL = 5000;
                                     let into = profile.player_cur_xp - XP_BASE;

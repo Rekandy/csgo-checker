@@ -3,6 +3,13 @@ const equal = require('fast-deep-equal');
 const friendCode = require("csgo-friendcode");
 var showdown = require('showdown');
 const md_converter = new showdown.Converter();
+// SECURITY NOTE (showdown XSS/ReDoS advisories, no upstream fix available):
+// makeHtml() is only ever fed the application's own bundled changelog.md
+// (main.js 'ready' -> 'update:changelog' reads __dirname/changelog.md and is
+// the sole emitter; front.js is the sole consumer). No user-, network-, or
+// attacker-controlled input reaches showdown, so the reported XSS/ReDoS
+// advisories are not reachable in this app. Do not feed untrusted markdown
+// through md_converter without first adding output sanitization.
 
 contextBridge.exposeInMainWorld("ipcRenderer", {
   send: (channel, ...args) => {
