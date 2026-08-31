@@ -11,47 +11,141 @@ module.exports = Protos;
  * @param {boolean} [ignoreErrors=true] - Whether to suppress load errors.
  * @returns {Object} Map of {name: {TypeName: protobufjs.Type, ...}}
  */
+// Message types to export from each proto set.
+const MESSAGE_TYPES = [
+	"CMsgClientWelcome",
+	"CSOEconGameAccountClient",
+	"CMsgGCCStrike15_v2_MatchmakingGC2ClientHello",
+	"CMsgGCCStrike15_v2_ClientGCRankUpdate",
+	"CMsgGCCStrike15_v2_PlayersProfile",
+	"CMsgGCCStrike15_v2_ClientRequestPlayersProfile",
+	"PlayerRankingInfo",
+	"PlayerCommendationInfo",
+	"PlayerMedalsInfo",
+	"CMsgClientHello"
+];
+
+/**
+ * Resolve a proto set's `protos` entry to a concrete list of .proto file paths.
+ * Accepts either an explicit array of paths or a directory to scan.
+ * @param {string[]|string} protosEntry
+ * @returns {string[]}
+ */
+function resolveProtoFiles(protosEntry) {
+	if (Array.isArray(protosEntry)) {
+		return protosEntry;
+	}
+	// It's a directory path - read all .proto files from it
+	return fs.readdirSync(protosEntry)
+		.filter(f => f.endsWith(".proto"))
+		.map(f => path.join(protosEntry, f));
+}
+
+/**
+ * Determine the proto include directory from the first existing .proto file.
+ * All proto files should be in the same directory for import resolution.
+ * @param {string[]} files
+ * @returns {string|null} directory path, or null if no valid file found
+ */
+function findProtosDir(files) {
+	for (const file of files) {
+		if (file.endsWith(".proto") && fs.existsSync(file)) {
+			return path.dirname(path.resolve(file));
+		}
+	}
+	return null;
+}
+
+/**
+ * Build the custom protobufjs import resolver for a given protos directory so
+ * cross-file imports work.
+ * @param {string} protosDir
+ * @returns {function(string, string): string}
+ */
+function makeResolvePath(protosDir) {
+	return function (origin, target) {
+		// protobufjs 7 no longer bundles google/protobuf/descriptor.proto in
+		// its "common" registry (protobufjs 6 did). The Steam .proto files
+		// declare custom options by extending google.protobuf.*Options, so we
+		// resolve descriptor.proto to the minimal local copy shipped under
+		// protos/google/protobuf/ instead.
+		if (target === "google/protobuf/descriptor.proto") {
+			return path.resolve(protosDir, "google", "protobuf", "descriptor.proto");
+		}
+		// For the remaining google/protobuf imports, let protobufjs handle
+		// them with its built-in "common" definitions.
+		if (target.startsWith("google/protobuf/")) {
+			return target;
+		}
+		// Resolve all other imports relative to the protos directory
+		return path.resolve(protosDir, target);
+	};
+}
+
+/**
+ * Load all .proto files into the given root.
+ * @param {Protobuf.Root} root
+ * @param {string[]} files
+ * @param {boolean} ignoreErrors
+ */
+function loadProtoFiles(root, files, ignoreErrors) {
+	for (const file of files) {
+		if (!file.endsWith(".proto")) {
+			continue;
+		}
+
+		const resolvedFile = path.resolve(file);
+		if (!fs.existsSync(resolvedFile)) {
+			if (!ignoreErrors) {
+				throw new Error(`Proto file not found: ${resolvedFile}`);
+			}
+			continue;
+		}
+
+		try {
+			root.loadSync(resolvedFile, {
+				keepCase: true,
+				alternateCommentMode: true
+			});
+		} catch (err) {
+			if (!ignoreErrors) {
+				throw err;
+			}
+			console.error(`Error loading proto file ${resolvedFile}: ${err.message}`);
+		}
+	}
+}
+
+/**
+ * Look up the exported message types from a loaded root into a type map.
+ * @param {Protobuf.Root} root
+ * @param {boolean} ignoreErrors
+ * @returns {Object} {TypeName: protobufjs.Type, ...}
+ */
+function buildTypeMap(root, ignoreErrors) {
+	const typeMap = {};
+	for (const typeName of MESSAGE_TYPES) {
+		try {
+			typeMap[typeName] = root.lookupType(typeName);
+		} catch (err) {
+			// Type may not exist in this particular set of proto files
+			if (!ignoreErrors) {
+				throw new Error(`Failed to look up type ${typeName}: ${err.message}`);
+			}
+		}
+	}
+	return typeMap;
+}
+
 function Protos(protos, ignoreErrors = true) {
 	const protobufs = {};
-
-	// Message types to export from each proto set
-	const messageTypes = [
-		"CMsgClientWelcome",
-		"CSOEconGameAccountClient",
-		"CMsgGCCStrike15_v2_MatchmakingGC2ClientHello",
-		"CMsgGCCStrike15_v2_ClientGCRankUpdate",
-		"CMsgGCCStrike15_v2_PlayersProfile",
-		"CMsgGCCStrike15_v2_ClientRequestPlayersProfile",
-		"PlayerRankingInfo",
-		"PlayerCommendationInfo",
-		"PlayerMedalsInfo",
-		"CMsgClientHello"
-	];
 
 	for (let proto of protos) {
 		// Create a single root for this proto set
 		const root = new Protobuf.Root();
 
-		// Get the list of proto files
-		let files;
-		if (Array.isArray(proto.protos)) {
-			files = proto.protos;
-		} else {
-			// It's a directory path - read all .proto files from it
-			files = fs.readdirSync(proto.protos)
-				.filter(f => f.endsWith(".proto"))
-				.map(f => path.join(proto.protos, f));
-		}
-
-		// Determine the proto include directory from the first file
-		// All proto files should be in the same directory for import resolution
-		let protosDir = null;
-		for (const file of files) {
-			if (file.endsWith(".proto") && fs.existsSync(file)) {
-				protosDir = path.dirname(path.resolve(file));
-				break;
-			}
-		}
+		const files = resolveProtoFiles(proto.protos);
+		const protosDir = findProtosDir(files);
 
 		if (!protosDir) {
 			if (!ignoreErrors) {
@@ -62,65 +156,11 @@ function Protos(protos, ignoreErrors = true) {
 		}
 
 		// Set up custom import resolution so cross-file imports work
-		root.resolvePath = function (origin, target) {
-			// protobufjs 7 no longer bundles google/protobuf/descriptor.proto in
-			// its "common" registry (protobufjs 6 did). The Steam .proto files
-			// declare custom options by extending google.protobuf.*Options, so we
-			// resolve descriptor.proto to the minimal local copy shipped under
-			// protos/google/protobuf/ instead.
-			if (target === "google/protobuf/descriptor.proto") {
-				return path.resolve(protosDir, "google", "protobuf", "descriptor.proto");
-			}
-			// For the remaining google/protobuf imports, let protobufjs handle
-			// them with its built-in "common" definitions.
-			if (target.startsWith("google/protobuf/")) {
-				return target;
-			}
-			// Resolve all other imports relative to the protos directory
-			return path.resolve(protosDir, target);
-		};
+		root.resolvePath = makeResolvePath(protosDir);
 
-		// Load all proto files into the same root
-		for (const file of files) {
-			if (!file.endsWith(".proto")) {
-				continue;
-			}
+		loadProtoFiles(root, files, ignoreErrors);
 
-			const resolvedFile = path.resolve(file);
-			if (!fs.existsSync(resolvedFile)) {
-				if (!ignoreErrors) {
-					throw new Error(`Proto file not found: ${resolvedFile}`);
-				}
-				continue;
-			}
-
-			try {
-				root.loadSync(resolvedFile, {
-					keepCase: true,
-					alternateCommentMode: true
-				});
-			} catch (err) {
-				if (!ignoreErrors) {
-					throw err;
-				}
-				console.error(`Error loading proto file ${resolvedFile}: ${err.message}`);
-			}
-		}
-
-		// Build the type map for this proto set
-		const typeMap = {};
-		for (const typeName of messageTypes) {
-			try {
-				typeMap[typeName] = root.lookupType(typeName);
-			} catch (err) {
-				// Type may not exist in this particular set of proto files
-				if (!ignoreErrors) {
-					throw new Error(`Failed to look up type ${typeName}: ${err.message}`);
-				}
-			}
-		}
-
-		protobufs[proto.name] = typeMap;
+		protobufs[proto.name] = buildTypeMap(root, ignoreErrors);
 	}
 
 	return protobufs;
