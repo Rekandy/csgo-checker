@@ -121,6 +121,37 @@ test('(e) sync uses atomic replace: no leftover .tmp on success', async () => {
     assert.ok(!fs.existsSync(file + '.tmp'), 'no leftover .tmp file after a successful sync');
 });
 
+test('backward-compat: decrypts a pre-recorded {iv,salt,data} blob with the correct password', async () => {
+    // This blob was written by EncryptedStorage.sync() using the storage scheme
+    // (pbkdf2 sha256, 200000 rounds, aes-256-cbc, {iv,salt,data} on disk). It is
+    // hard-coded here so that any future change to the key-derivation params or
+    // to the pbkdf2 dependency that breaks decryption of already-written account
+    // databases will fail this test rather than silently locking users out.
+    const dir = mkTmp();
+    const file = path.join(dir, 'db.json');
+    const blob = '{"iv":"8a465c30b1bcaf2e828146467c16a660","salt":"0mTblJGc14Ey","data":"/tkYulVmY+D+EedfAPMJ+b2XQbgC9Lr1OR0y7jq0DnZr6jzFrTyPcIeLQYLwdsnwf1bNMxCdgkR+dczXzN16cDbZlUTTyfFGVKbAR8wTN9dtDcM+AwZ1l/BN78TS9E2dd+44+e0g0mjQqL30jdgaFE3nX7wsSlkgGACIOqri8pFfzlnXwzUOT/fh63R4BJjSHopDjl90N/lVdzZ4zLkoPB2XxL5Bbhu00nUOjYZ3u1E="}';
+    fs.writeFileSync(file, blob);
+
+    const res = await open(file, 'fixture-password-v1');
+    assert.strictEqual(res.event, 'loaded', 'stored blob must decrypt with the correct password');
+    assert.deepStrictEqual(res.db.get('alice'), { steamid: '76561198000000001', rank: 18 });
+    assert.deepStrictEqual(res.db.get('bob'), { steamid: '76561198000000002', rank: 0 });
+});
+
+test('backward-compat: pre-recorded blob rejects a wrong password without wiping', async () => {
+    const dir = mkTmp();
+    const file = path.join(dir, 'db.json');
+    const blob = '{"iv":"8a465c30b1bcaf2e828146467c16a660","salt":"0mTblJGc14Ey","data":"/tkYulVmY+D+EedfAPMJ+b2XQbgC9Lr1OR0y7jq0DnZr6jzFrTyPcIeLQYLwdsnwf1bNMxCdgkR+dczXzN16cDbZlUTTyfFGVKbAR8wTN9dtDcM+AwZ1l/BN78TS9E2dd+44+e0g0mjQqL30jdgaFE3nX7wsSlkgGACIOqri8pFfzlnXwzUOT/fh63R4BJjSHopDjl90N/lVdzZ4zLkoPB2XxL5Bbhu00nUOjYZ3u1E="}';
+    fs.writeFileSync(file, blob);
+    const before = fs.readFileSync(file);
+
+    const res = await open(file, 'not-the-fixture-password');
+    assert.strictEqual(res.event, 'error', 'wrong password against the stored blob must emit error');
+
+    const after = fs.readFileSync(file);
+    assert.ok(before.equals(after), 'stored blob must remain byte-identical after a wrong-password attempt');
+});
+
 test('on-disk format stays {iv,salt,data} for backward compatibility', async () => {
     const dir = mkTmp();
     const file = path.join(dir, 'db.json');
