@@ -41,7 +41,7 @@
  *   - never overwrites a VAC/ban sentinel (rank === -1),
  *   - only fills premier/wingman when GCPD actually has signal for the mode
  *     (the *_present flag is set by parseMatchmaking),
- *   - maps an expired premier (present row, rating 0, wins > 0) to -1,
+ *   - maps an expired premier (present row, rating 0, wins >= 10) to -1,
  *   - maps an expired wingman (present row, rank 0, wins > 0) to rank 0 with
  *     wins retained so `rank == 0 && wins >= 10` fires in the renderer,
  *   - does not overwrite an already-resolved active value with a GCPD default.
@@ -59,9 +59,20 @@ function mergeGcpdMatchmaking(data, mmData) {
   if (mmData.premier_present && data.rank_premier !== -1) {
     if (mmData.premier_rating > 0) {
       data.rank_premier = mmData.premier_rating;
-    } else if (mmData.premier_wins > 0) {
-      // Present row, rating 0 but prior wins -> expired. Do not overwrite a
-      // real active rating GC may already have set.
+    } else if (mmData.premier_wins >= 10) {
+      // Present row, rating 0 but >= 10 prior wins -> expired.
+      //
+      // The >= 10 threshold intentionally matches the renderer's expired gate
+      // for mm/wg/dz (`rank == 0 && wins >= 10`). Premier is the one mode whose
+      // expired state is a dedicated sentinel (-1) computed here rather than by
+      // the renderer, so it must use the SAME wins threshold as the other modes
+      // - otherwise a premier account with 1-9 wins and rating 0 would render
+      // "Expired" while the equivalent wingman renders "Unranked". Anything
+      // below 10 wins is treated as never-ranked/unranked (rating stays 0),
+      // which also prevents a never-ranked premier (GC-set 0) with a stray low
+      // GCPD wins count from being flipped to expired.
+      //
+      // Do not overwrite a real active rating GC may already have set.
       if (data.rank_premier == null || data.rank_premier <= 0) {
         data.rank_premier = -1;
       }
@@ -101,6 +112,17 @@ function mergeGcpdMatchmaking(data, mmData) {
  * that would drop the expired state. VAC/ban sentinels (-1) already on the data
  * object are never overwritten.
  *
+ * VAC cascade: when competitive is VAC-banned, CS2's secondary modes are also
+ * banned. The ClientGCRankUpdate (9194) handler in main.js cascades a
+ * competitive VAC into wingman/dz/premier; this function replicates that rule
+ * so behavior is identical regardless of which GC message (9128 vs 9194)
+ * resolves the account. The cascade is applied both when a secondary entry
+ * arrives after competitive was already VAC, and retroactively (via
+ * cascadeVac) when the competitive VAC entry itself arrives - so it is
+ * order-independent. It triggers ONLY on the genuine VAC sentinel (both
+ * data.rank === -1 and data.wins === -1), never on a legitimate expired /
+ * unranked rank_id 0.
+ *
  * @param {object} data - account data object (mutated in place)
  * @param {object} ranking - a PlayerRankingInfo-like object
  * @returns {object} data
@@ -112,20 +134,57 @@ function applyGcRanking(data, ranking) {
   switch (ranking.rank_type_id) {
     case 6: // competitive
       if (data.rank !== -1) { data.rank = rankId; data.wins = rankWins; }
+      // If this entry established (or confirmed) a competitive VAC, retroactively
+      // cascade it into any secondary modes already present on the data object.
+      cascadeVac(data);
       break;
     case 7: // wingman
       if (data.rank_wg !== -1) { data.rank_wg = rankId; data.wins_wg = rankWins; }
+      if (isCompetitiveVac(data)) { data.rank_wg = -1; data.wins_wg = -1; }
       break;
     case 10: // dangerzone
       if (data.rank_dz !== -1) { data.rank_dz = rankId; data.wins_dz = rankWins; }
+      if (isCompetitiveVac(data)) { data.rank_dz = -1; data.wins_dz = -1; }
       break;
     case 11: // premier
       // Premier expired sentinel is -1; do not clobber it. rank_id 0 means
       // unranked/none here (the expired mapping comes from the GCPD path,
       // which has the wins signal to distinguish expired from never-ranked).
       if (data.rank_premier !== -1) { data.rank_premier = rankId; data.wins_premier = rankWins; }
+      if (isCompetitiveVac(data)) { data.rank_premier = -1; data.wins_premier = -1; }
       break;
   }
+  return data;
+}
+
+/**
+ * True only when competitive is the genuine VAC/ban sentinel. The competitive
+ * VAC sentinel is set as rank = -1 AND wins = -1 (see the 9110 handler in
+ * main.js). Requiring both guards against treating a legitimate expired /
+ * unranked competitive rank (rank_id 0) as a ban.
+ *
+ * @param {object} data - account data object
+ * @returns {boolean}
+ */
+function isCompetitiveVac(data) {
+  return data.rank === -1 && data.wins === -1;
+}
+
+/**
+ * Cascade a competitive VAC into the secondary modes (wingman/dz/premier),
+ * matching the 9194 handler. Only overwrites secondary modes that carry actual
+ * values (not still-null) so it does not fabricate modes CS2 never reported;
+ * modes CS2 does report on a VAC account arrive as their own entries and get
+ * the sentinel applied in applyGcRanking's per-mode branches.
+ *
+ * @param {object} data - account data object (mutated in place)
+ * @returns {object} data
+ */
+function cascadeVac(data) {
+  if (!isCompetitiveVac(data)) return data;
+  if (data.rank_wg != null) { data.rank_wg = -1; data.wins_wg = -1; }
+  if (data.rank_dz != null) { data.rank_dz = -1; data.wins_dz = -1; }
+  if (data.rank_premier != null) { data.rank_premier = -1; data.wins_premier = -1; }
   return data;
 }
 
