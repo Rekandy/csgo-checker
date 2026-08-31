@@ -538,6 +538,49 @@ ipcMain.handle('accounts:get', () => {
     return data;
 });
 
+// Human-readable strings for the steam-user login error eresults we recognize.
+// eresults 6 and 34 both map to "Logged In Elsewhere".
+const LOGIN_ERROR_STRINGS = {
+    2: 'General Failure',
+    5: 'Invalid Password',
+    6: 'Logged In Elsewhere',
+    34: 'Logged In Elsewhere',
+    18: 'Expired',
+    65: 'steam guard is invalid',
+    84: 'Rate Limit Exceeded'
+};
+
+/**
+ * Map a steam-user login error eresult to a human-readable string, preserving
+ * the exact wording (and the Unknown fallback) of the original switch.
+ * @param {number} eresult
+ * @returns {string}
+ */
+function loginErrorString(eresult) {
+    return LOGIN_ERROR_STRINGS[eresult] ?? `Unknown: ${eresult}`;
+}
+
+// Rank/wins fields normalized from null back to 0 on finish for UI backward
+// compatibility (the renderer expects numbers, not null).
+const RANK_NULLABLE_FIELDS = [
+    'rank', 'wins',
+    'rank_wg', 'wins_wg',
+    'rank_dz', 'wins_dz',
+    'rank_premier', 'wins_premier'
+];
+
+/**
+ * Convert any null/undefined rank/wins fields on a resolved data object back to
+ * 0, in place. Uses `== null` so only null/undefined (not a legitimate 0 or the
+ * -1 VAC/expired sentinel) are replaced.
+ * @param {object} resolveData
+ */
+function normalizeRankNulls(resolveData) {
+    for (const field of RANK_NULLABLE_FIELDS) {
+        if (resolveData[field] == null) resolveData[field] = 0;
+    }
+}
+
 /**
  * Derive a STATUS from a check_account rejection. The rejection carries an
  * `eresult` when it originated from a steam-user login error; otherwise it is a
@@ -787,14 +830,7 @@ function check_account(username, pass, sharedSecret) {
             if (resolveData) {
                 // Convert any remaining null rank fields back to 0 for backward
                 // compatibility with the UI (which expects numbers, not null)
-                if (resolveData.rank == null) resolveData.rank = 0;
-                if (resolveData.wins == null) resolveData.wins = 0;
-                if (resolveData.rank_wg == null) resolveData.rank_wg = 0;
-                if (resolveData.wins_wg == null) resolveData.wins_wg = 0;
-                if (resolveData.rank_dz == null) resolveData.rank_dz = 0;
-                if (resolveData.wins_dz == null) resolveData.wins_dz = 0;
-                if (resolveData.rank_premier == null) resolveData.rank_premier = 0;
-                if (resolveData.wins_premier == null) resolveData.wins_premier = 0;
+                normalizeRankNulls(resolveData);
                 resolve(resolveData);
             }
             try {
@@ -831,17 +867,7 @@ function check_account(username, pass, sharedSecret) {
         });
 
         steamClient.on('error', (e) => {
-            let errorStr = '';
-            switch (e.eresult) {
-                case 2:  errorStr = `General Failure`;          break;
-                case 5:  errorStr = `Invalid Password`;         break;
-                case 6:
-                case 34: errorStr = `Logged In Elsewhere`;      break;
-                case 18: errorStr = `Expired`;                  break;
-                case 65: errorStr = `steam guard is invalid`;   break;
-                case 84: errorStr = `Rate Limit Exceeded`;      break;
-                default: errorStr = `Unknown: ${e.eresult}`;    break;
-            }
+            const errorStr = loginErrorString(e.eresult);
             console.log(`[${username}] Login error: ${errorStr} (eresult=${e.eresult})`);
             // A Steam-Guard-invalid result (eresult 65) on the shared-secret
             // TOTP path is the classic symptom of a stale cached time offset:
