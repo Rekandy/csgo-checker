@@ -1,0 +1,23 @@
+// Minimal subset of google/protobuf/descriptor.proto.
+//
+// protobufjs 7 no longer bundles descriptor.proto in its "common" registry
+// (unlike protobufjs 6), so the Steam .proto files that declare custom options
+// by extending google.protobuf.{Message,File,Field}Options can no longer
+// resolve those base types. We only need the option message types to exist as
+// extensible containers; the CS:GO/GC message definitions this project uses do
+// not read the custom option values, they just need the extends to resolve.
+syntax = "proto2";
+
+package google.protobuf;
+
+message FileOptions {
+  extensions 1000 to max;
+}
+
+message MessageOptions {
+  extensions 1000 to max;
+}
+
+message FieldOptions {
+  extensions 1000 to max;
+}

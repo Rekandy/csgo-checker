@@ -63,7 +63,16 @@ function Protos(protos, ignoreErrors = true) {
 
 		// Set up custom import resolution so cross-file imports work
 		root.resolvePath = function (origin, target) {
-			// For google/protobuf imports, let protobufjs handle them with its built-in definitions
+			// protobufjs 7 no longer bundles google/protobuf/descriptor.proto in
+			// its "common" registry (protobufjs 6 did). The Steam .proto files
+			// declare custom options by extending google.protobuf.*Options, so we
+			// resolve descriptor.proto to the minimal local copy shipped under
+			// protos/google/protobuf/ instead.
+			if (target === "google/protobuf/descriptor.proto") {
+				return path.resolve(protosDir, "google", "protobuf", "descriptor.proto");
+			}
+			// For the remaining google/protobuf imports, let protobufjs handle
+			// them with its built-in "common" definitions.
 			if (target.startsWith("google/protobuf/")) {
 				return target;
 			}
