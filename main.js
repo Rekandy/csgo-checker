@@ -1150,60 +1150,68 @@ function check_account(username, pass, sharedSecret) {
 
         steamClient.on('receivedFromGC', function(appid, msgType, payload) {
             console.log(`[${username}] receivedFromGC msgType=${msgType}`);
-            try {
-                switch (msgType) {
-                    case GC_MSG.ClientWelcome: {
-                        gcWelcomeReceived = true;
-                        if (gcHelloInterval) {
-                            clearInterval(gcHelloInterval);
-                            gcHelloInterval = null;
-                        }
 
-                        if (!Protos.csgo.CMsgClientWelcome) {
-                            console.error(`[${username}] CMsgClientWelcome proto not found`);
-                            return;
-                        }
-                        let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
-                        // protoDecode returns {} on failure - guard every field.
-                        const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
-                            ? CMsgClientWelcome.outofdate_subscribed_caches
-                            : [];
-                        for (let i = 0; i < outofdateCaches.length; i++) {
-                            let outofdate_cache = outofdateCaches[i];
-                            const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
-                            for (let j = 0; j < cacheObjects.length; j++) {
-                                let cache_object = cacheObjects[j];
-                                if (!cache_object || !Array.isArray(cache_object.object_data)) {
-                                    continue;
-                                }
-                                if (cache_object.object_data.length == 0) {
-                                    continue;
-                                }
-                                switch (cache_object.type_id) {
-                                    case 7: {
-                                        let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                        // elevated_state is only a PRELIMINARY hint. The authoritative
-                                        // Prime determination is the level/XP heuristic applied last in
-                                        // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
-                                        // handlers - do not let this overwrite a heuristic result that
-                                        // has already been established (lvl > 1 or exp > 0).
-                                        if (!((data.lvl > 1) || (data.exp > 0))) {
-                                            data.prime = CSOEconGameAccountClient.elevated_state >= 4;
-                                            console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
-                                        }
+            // Per-msgType GC message handlers. Each is a closure over the
+            // enclosing check scope (data, db, steamClient, finish, attempts,
+            // gcWelcomeReceived/gcHelloInterval/gcRankDataReady, ...) so the
+            // side effects, ordering, and finish/rank-ready signaling are
+            // identical to the previous inline switch. The dispatch below
+            // selects one by msgType exactly as the switch did.
 
-                                        sleep(1000).then(function() {
-                                            if (Done) return;
-                                            steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
-                                        });
-                                        break;
-                                    }
+            // GC_MSG.ClientWelcome
+            const handleClientWelcome = (appid, payload) => {
+                gcWelcomeReceived = true;
+                if (gcHelloInterval) {
+                    clearInterval(gcHelloInterval);
+                    gcHelloInterval = null;
+                }
+
+                if (!Protos.csgo.CMsgClientWelcome) {
+                    console.error(`[${username}] CMsgClientWelcome proto not found`);
+                    return;
+                }
+                let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
+                // protoDecode returns {} on failure - guard every field.
+                const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
+                    ? CMsgClientWelcome.outofdate_subscribed_caches
+                    : [];
+                for (let i = 0; i < outofdateCaches.length; i++) {
+                    let outofdate_cache = outofdateCaches[i];
+                    const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
+                    for (let j = 0; j < cacheObjects.length; j++) {
+                        let cache_object = cacheObjects[j];
+                        if (!cache_object || !Array.isArray(cache_object.object_data)) {
+                            continue;
+                        }
+                        if (cache_object.object_data.length == 0) {
+                            continue;
+                        }
+                        switch (cache_object.type_id) {
+                            case 7: {
+                                let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
+                                // elevated_state is only a PRELIMINARY hint. The authoritative
+                                // Prime determination is the level/XP heuristic applied last in
+                                // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
+                                // handlers - do not let this overwrite a heuristic result that
+                                // has already been established (lvl > 1 or exp > 0).
+                                if (!((data.lvl > 1) || (data.exp > 0))) {
+                                    data.prime = CSOEconGameAccountClient.elevated_state >= 4;
+                                    console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
                                 }
+
+                                sleep(1000).then(function() {
+                                    if (Done) return;
+                                    steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
+                                });
+                                break;
                             }
                         }
-                        break;
                     }
-                    case GC_MSG.MatchmakingGC2ClientHello: {
+                }
+            };
+
+            // GC_MSG.MatchmakingGC2ClientHello
+            const handleMatchmakingHello = (appid, payload) => {
                         // Request all rank types
                         let rankUpdateMsg = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, {
                             rankings: [
@@ -1226,7 +1234,7 @@ function check_account(username, pass, sharedSecret) {
 
                         if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
                             console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
-                            break;
+                            return;
                         }
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
 
@@ -1261,14 +1269,15 @@ function check_account(username, pass, sharedSecret) {
                                 db.set(username, account);
                             }
                         }
-                        break;
-                    }
-                    case GC_MSG.PlayersProfile: {
-                        // Decode player profile response (msg 9128)
-                        if (!Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile) {
-                            console.log(`[${username}] CMsgGCCStrike15_v2_PlayersProfile proto not available`);
-                            break;
-                        }
+            };
+
+            // GC_MSG.PlayersProfile (msg 9128)
+            const handlePlayersProfile = (appid, payload) => {
+                // Decode player profile response (msg 9128)
+                if (!Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile) {
+                    console.log(`[${username}] CMsgGCCStrike15_v2_PlayersProfile proto not available`);
+                    return;
+                }
                         let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
                         if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
                             for (let p = 0; p < profileMsg.account_profiles.length; p++) {
@@ -1317,13 +1326,14 @@ function check_account(username, pass, sharedSecret) {
                             }
                             console.log(`[${username}] Profile data received: lvl=${data.lvl}, exp=${data.exp}`);
                         }
-                        break;
-                    }
-                    case GC_MSG.ClientGCRankUpdate: {
+            };
+
+            // GC_MSG.ClientGCRankUpdate (msg 9194)
+            const handleClientGCRankUpdate = (appid, payload) => {
                         let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
                         if (!msg.rankings || !Array.isArray(msg.rankings)) {
                             gcRankDataReady = true;
-                            break;
+                            return;
                         }
                         for (const ranking of msg.rankings) {
                             if (!ranking) continue;
@@ -1383,8 +1393,21 @@ function check_account(username, pass, sharedSecret) {
                             data.error = null;
                             finish(data);
                         }
-                        break;
-                    }
+            };
+
+            // Dispatch table: msgType -> handler. Mirrors the original switch
+            // exactly; unlisted msgTypes are ignored (the switch had no default).
+            const GC_HANDLERS = {
+                [GC_MSG.ClientWelcome]: handleClientWelcome,
+                [GC_MSG.MatchmakingGC2ClientHello]: handleMatchmakingHello,
+                [GC_MSG.PlayersProfile]: handlePlayersProfile,
+                [GC_MSG.ClientGCRankUpdate]: handleClientGCRankUpdate
+            };
+
+            try {
+                const handler = GC_HANDLERS[msgType];
+                if (handler) {
+                    handler(appid, payload);
                 }
             } catch (error) {
                 console.error(`[${username}] Error processing GC message ${msgType}:`, error);
