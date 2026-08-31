@@ -5,8 +5,12 @@ var showdown = require('showdown');
 const md_converter = new showdown.Converter();
 
 contextBridge.exposeInMainWorld("ipcRenderer", {
-  send: (channel, data) => {
-    ipcRenderer.send(channel, data);
+  send: (channel, ...args) => {
+    // Forward all arguments so multi-arg IPC messages survive the bridge.
+    // The Steam Guard response sends (code, username); dropping the username
+    // (as a single-arg bridge would) breaks per-account routing under
+    // concurrent Steam Guard prompts.
+    ipcRenderer.send(channel, ...args);
   },
   on: (channel, func) => {
     ipcRenderer.on(channel, (...args) => func(...args));

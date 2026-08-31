@@ -1,13 +1,16 @@
 {
   "name": "csgo-checker",
   "version": "1.4.4",
-  "description": "Check CS:GO accounts for bans/cooldowns/wins/ranks",
+  "description": "Check CS2 (Counter-Strike 2, formerly CS:GO) accounts for bans/cooldowns/wins/ranks/Premier/level",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "lint": "eslint .",
+    "test": "node --test \"test/**/*.test.js\"",
     "build": "electron-builder --win --linux",
     "build:windows": "electron-builder --win",
     "build:linux": "electron-builder --linux",
+    "package": "electron-builder --dir",
     "publish": "electron-builder --win --linux --publish always"
   },
   "author": "dumbasPL",
@@ -27,9 +30,11 @@
     "steam-user": "^5.2.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.25.1",
     "electron": "^25.8.4",
     "electron-builder": "^24.13.3",
-    "eslint": "^9.25.1"
+    "eslint": "^9.25.1",
+    "globals": "^14.0.0"
   },
   "build": {
     "appId": "cc.nezu.csgochecker",

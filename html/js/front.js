@@ -537,24 +537,39 @@ function updateRow(row, login, account, force) {
     let levelValue = row.querySelector('.level .level-value');
     let rankIcon = row.querySelector('.level .rank-icon');
     
-    // Обновляем уровень профиля и значок ранга
+    // Обновляем уровень профиля и значок ранга.
+    // CS2 profile levels start at 1, so a value of 0/null/undefined means the
+    // level is unknown/unavailable (never fetched or the data source returned
+    // nothing). Render 'N/A' instead of a misleading "0" with a fake rank icon.
     let level = account.lvl ?? 0;
-    levelValue.innerText = level;
-    
-    // Определяем номер значка ранга (от 1 до 40)
-    let rankNumber = Math.min(Math.max(level, 1), 40);
-    rankIcon.src = `img/ranks/${rankNumber}.png`;
-    
-    // Обновляем прогресс опыта
-    if (account.exp !== undefined) {
+    let levelKnown = Number.isFinite(level) && level >= 1;
+    levelValue.innerText = levelKnown ? level : 'N/A';
+
+    if (levelKnown) {
+        // Определяем номер значка ранга (от 1 до 40)
+        let rankNumber = Math.min(Math.max(level, 1), 40);
+        rankIcon.src = `img/ranks/${rankNumber}.png`;
+        rankIcon.style.display = '';
+    } else {
+        // Hide the rank badge entirely rather than implying rank 1.
+        rankIcon.style.display = 'none';
+    }
+
+    // Обновляем прогресс опыта. Only meaningful when the level is known;
+    // otherwise show 'N/A' rather than a stale "0/5000".
+    if (levelKnown && account.exp !== undefined && account.exp !== null) {
         let expPercent = (account.exp / 5000) * 100;
         expProgress.style.width = `${expPercent}%`;
         expProgress.setAttribute('aria-valuenow', account.exp);
         expText.innerText = account.exp;
-    } else {
+    } else if (levelKnown) {
         expProgress.style.width = '0%';
         expProgress.setAttribute('aria-valuenow', 0);
         expText.innerText = '0';
+    } else {
+        expProgress.style.width = '0%';
+        expProgress.setAttribute('aria-valuenow', 0);
+        expText.innerText = 'N/A';
     }
     
     // Отладочный код для проверки значений рангов
@@ -882,11 +897,11 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       updateAccounts();
     }
-    let promise = ipcRenderer.invoke('accounts:check', login);
+    let promise = ipcRenderer.invoke('accounts:check', username.value);
     updateAccounts();
     let ret = await promise;
     if (ret.error) {
-      showToast(login + ': ' + ret.error, 'danger');
+      showToast(username.value + ': ' + ret.error, 'danger');
     }
     updateAccounts();
   });
@@ -899,9 +914,13 @@ document.addEventListener('DOMContentLoaded', () => {
   })
 
   let code_sent = false;
+  // Username the Steam Guard prompt is currently shown for. Echoed back with
+  // the response so the main process can match the code to the right account
+  // when several accounts are being checked concurrently.
+  let steamGuardUsername = null;
   steamGuardModal_div.addEventListener('hide.bs.modal', e => {
     if (!code_sent) {
-      ipcRenderer.send('steam:steamguard:response', null);
+      ipcRenderer.send('steam:steamguard:response', null, steamGuardUsername);
     }
     code_sent = false;
   })
@@ -909,12 +928,13 @@ document.addEventListener('DOMContentLoaded', () => {
   steamGuardModal_div.querySelector('button.btn.btn-primary').addEventListener('click', async e => {
     e.preventDefault();
     let code = steamGuardModal_div.querySelector('#steam-guard').value.trim();
-    ipcRenderer.send('steam:steamguard:response', code.length == 0 ? null : code);
+    ipcRenderer.send('steam:steamguard:response', code.length == 0 ? null : code, steamGuardUsername);
     code_sent = true;
     steamGuardModal.hide();
   })
 
   ipcRenderer.on('steam:steamguard', (_, username) => {
+    steamGuardUsername = username;
     steamGuardModal_div.querySelector('#steam-guard-username').innerText = username;
     steamGuardModal.show();
   });
@@ -941,17 +961,10 @@ document.addEventListener('DOMContentLoaded', () => {
   })
 
   document.querySelector('#reloadall').addEventListener('click', async e => {
-    const accounts = await ipcRenderer.invoke('accounts:get');
-    for (const login in accounts) {
-      if (Object.hasOwnProperty.call(accounts, login)) {
-        ipcRenderer.invoke('accounts:check', login).then(ret => {
-          if (ret.error) {
-            showToast(login + ': ' + ret.error, 'danger');
-          }
-        });
-        await new Promise(p => setTimeout(p, 200));
-      }
-    }
+    // Route the refresh-all through the main process bounded queue so at most
+    // `concurrency` steam-user logons run at once. Per-account results arrive
+    // via the 'accounts:updated' IPC event.
+    await ipcRenderer.invoke('accounts:check_all');
     updateAccounts();
   });
 

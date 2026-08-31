@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const isDev = require('electron-is-dev');
 const EncryptedStorage = require('./EncryptedStorage.js');
@@ -10,11 +10,15 @@ const fs = require('fs');
 const path = require('path');
 const { EOL } = require('os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
-const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage } = require('./helpers/gcpd_parser.js');
+const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage } = require('./helpers/gcpd_parser.js');
+const logger = require('./helpers/logger.js');
+const { parseAccountLines } = require('./helpers/importParser.js');
+const { TaskQueue } = require('./helpers/queue.js');
+const { STATUS, statusFromEresult, shouldRetry, backoffDelay } = require('./helpers/checker.js');
 // Исправление загрузки proto-файлов
 let Protos;
 try {
-    console.log('Loading proto files for csgo...');
+    logger.info('Loading proto files for csgo...');
     const protoFiles = [
         path.join(__dirname, '/protos/cstrike15_gcmessages.proto'),
         path.join(__dirname, '/protos/gcsdk_gcmessages.proto'),
@@ -24,9 +28,9 @@ try {
     // Проверяем существование файлов
     protoFiles.forEach((file, index) => {
         if (fs.existsSync(file)) {
-            console.log(`Found proto file ${index + 1}: ${file}`);
+            logger.debug('Found proto file', { index: index + 1, file });
         } else {
-            console.error(`Proto file not found: ${file}`);
+            logger.error('Proto file not found', { file });
         }
     });
     
@@ -34,9 +38,9 @@ try {
         name: 'csgo',
         protos: protoFiles
     }]);
-    console.log('Proto files loaded successfully');
+    logger.info('Proto files loaded successfully');
 } catch (error) {
-    console.error('Error loading proto files:', error);
+    logger.error('Error loading proto files', { error });
     Protos = { csgo: {} }; // Пустой объект для предотвращения ошибок
 }
 
@@ -56,6 +60,42 @@ const GC_MSG = {
     PlayersProfile: 9128,
     ClientGCRankUpdate: 9194
 };
+
+// Retry policy for account checks. invalid_credentials and steam_guard_required
+// fail fast (see helpers/checker.js shouldRetry); everything else is retried
+// with exponential backoff + jitter up to CHECK_MAX_ATTEMPTS.
+const CHECK_MAX_ATTEMPTS = 3;
+const DEFAULT_CHECK_CONCURRENCY = 3;
+
+/**
+ * Resolve the configured concurrency for mass checks, defaulting to 3.
+ * @returns {number}
+ */
+function getCheckConcurrency() {
+    const configured = Number(settings.get('checkConcurrency'));
+    if (Number.isFinite(configured) && configured >= 1) {
+        return Math.floor(configured);
+    }
+    return DEFAULT_CHECK_CONCURRENCY;
+}
+
+// Shared bounded-concurrency queue for mass operations (import auto-check,
+// refresh-all). Rebuilt when the configured concurrency changes so at most
+// `concurrency` steam-user logons happen at once.
+let checkQueue = null;
+
+/**
+ * Get (or lazily build) the shared mass-check queue at the configured
+ * concurrency. Rebuilds if the setting changed since last use.
+ * @returns {TaskQueue}
+ */
+function getCheckQueue() {
+    const concurrency = getCheckConcurrency();
+    if (!checkQueue || checkQueue.concurrency !== concurrency) {
+        checkQueue = new TaskQueue(concurrency);
+    }
+    return checkQueue;
+}
 
 const browserWindowOptions = {
     webPreferences: {
@@ -100,6 +140,46 @@ settings.sync(); //makes empty file on first run
  */
 var db = null;
 
+/**
+ * Apply defensive navigation guards to a BrowserWindow's webContents. Denies
+ * in-page navigation to anything other than the file that is already loaded
+ * (our bundled html), and refuses to open new windows for anything other than
+ * http/https links, which are instead handed off to the OS browser via
+ * shell.openExternal. This keeps the renderer from being redirected to, or
+ * spawning, arbitrary external/file:// content even if markup is compromised.
+ * @param {Electron.WebContents} webContents
+ */
+function applyNavigationGuards(webContents) {
+    webContents.on('will-navigate', (event, url) => {
+        const current = webContents.getURL();
+        // Allow navigations that stay on the currently loaded document
+        // (e.g. in-page reloads / hash changes). Deny everything else.
+        if (url !== current) {
+            event.preventDefault();
+            logger.warn('Blocked navigation attempt', { op: 'security', url });
+        }
+    });
+
+    webContents.setWindowOpenHandler(({ url }) => {
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch (_) {
+            logger.warn('Blocked window open with invalid url', { op: 'security', url });
+            return { action: 'deny' };
+        }
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+            shell.openExternal(url).catch((err) => {
+                logger.error('Failed to open external url', { op: 'security', error: err });
+            });
+        } else {
+            logger.warn('Blocked window open for non-http scheme', { op: 'security', scheme: parsed.protocol });
+        }
+        // Never let the renderer open a new Electron window itself.
+        return { action: 'deny' };
+    });
+}
+
 function beforeWindowInputHandler(window, event, input) {
     if (input.control && input.shift && input.key.toLowerCase() === 'i') {
         window.webContents.openDevTools();
@@ -129,6 +209,7 @@ async function openDB() {
                         show: false
                     });
                     promptWindow.removeMenu();
+                    applyNavigationGuards(promptWindow.webContents);
                     promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
                         promptWindow.webContents.send('password_dialog:init', error_message);
                     })
@@ -209,6 +290,33 @@ var currently_checking = [];
 
 var mainWindowCreated = false;
 
+/**
+ * Remove a username from the currently_checking list. Centralised so every
+ * finish/error/disconnect path cleans up consistently and no account gets
+ * stuck marked 'pending'.
+ * @param {string} username
+ */
+function clearCurrentlyChecking(username) {
+    currently_checking = currently_checking.filter(x => x !== username);
+}
+
+/**
+ * Persist an account's status (new backward-compatible field) and notify the
+ * renderer. Never removes existing fields. No-op if the account is gone.
+ * @param {string} username
+ * @param {string} status one of STATUS.*
+ */
+function setAccountStatus(username, status) {
+    if (!db) return;
+    const account = db.get(username);
+    if (!account) return;
+    account.status = status;
+    db.set(username, account);
+    if (win) {
+        win.webContents.send('accounts:updated', { login: username, data: account });
+    }
+}
+
 function createWindow () {
 
     win = new BrowserWindow({
@@ -220,6 +328,7 @@ function createWindow () {
         minHeight: 625
     });
     win.removeMenu();
+    applyNavigationGuards(win.webContents);
     win.loadFile(__dirname + '/html/index.html');
     win.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(win, event, input));
     win.webContents.once('did-finish-load', () => {
@@ -234,7 +343,7 @@ function createWindow () {
             win.webContents.send('update:downloaded');
         });
         autoUpdater.on('error', (err) => {
-            console.log(err);
+            logger.error('Auto updater error', { op: 'autoupdate', error: err });
         });
         if (autoUpdater.autoDownload) {
             autoUpdater.checkForUpdatesAndNotify();
@@ -285,6 +394,7 @@ ipcMain.handle('encryption:setup', async () => {
             show: false
         });
         promptWindow.removeMenu();
+        applyNavigationGuards(promptWindow.webContents);
         promptWindow.loadFile(__dirname + '/html/encryption_setup.html');
         promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
         promptWindow.once('ready-to-show', () => promptWindow.show())
@@ -319,7 +429,7 @@ ipcMain.handle('encryption:setup', async () => {
         settings.set('encrypted', true);
         return true;
     } catch (error) {
-        console.log(error);
+        logger.error('Failed to enable encryption', { op: 'encrypt', error });
         return false;
     }
 });
@@ -350,6 +460,7 @@ ipcMain.handle('encryption:remove', async () => {
                 show: false
             });
             promptWindow.removeMenu();
+            applyNavigationGuards(promptWindow.webContents);
             promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
                 promptWindow.webContents.send('password_dialog:init', error_message, 'Remove encryption');
             })
@@ -394,7 +505,7 @@ ipcMain.handle('encryption:remove', async () => {
             settings.set('encrypted', false);
             return false; //false is success as in non encrypted
         } catch (error) {
-            console.log(error);
+            logger.error('Failed to disable encryption', { op: 'decrypt', error });
             if (typeof error != 'string') {
                 if (error.reason == 'BAD_DECRYPT') {
                     error = 'Invalid password';
@@ -426,28 +537,92 @@ ipcMain.handle('accounts:get', () => {
     return data;
 });
 
+/**
+ * Derive a STATUS from a check_account rejection. The rejection carries an
+ * `eresult` when it originated from a steam-user login error; otherwise it is a
+ * generic/transient error.
+ * @param {*} error
+ * @returns {string} a STATUS value
+ */
+function statusFromCheckError(error) {
+    if (error && typeof error === 'object' && error.eresult != null) {
+        return statusFromEresult(error.eresult);
+    }
+    return STATUS.ERROR;
+}
+
+/**
+ * Extract a human-readable message from a check_account rejection while
+ * preserving backward compatibility with the string errors the UI expects.
+ * @param {*} error
+ * @returns {string}
+ */
+function checkErrorMessage(error) {
+    if (error == null) return 'unknown error';
+    if (typeof error === 'string') return error;
+    if (typeof error === 'object' && error.message) return String(error.message);
+    return String(error);
+}
+
+/**
+ * Run a single account check with retry + exponential backoff + jitter and a
+ * hard attempt cap. Non-retryable outcomes (invalid_credentials,
+ * steam_guard_required) fail fast; rate_limited backs off longer. Never loops
+ * forever. Writes the result and a per-account status to the db.
+ * @param {string} username
+ * @returns {Promise<object>} the resolved data object, or { error, status }
+ */
 async function process_check_account(username) {
     const account = db.get(username);
     if(!account) {
         return { error: 'unable to find account' };
     }
 
-    try {
-        const res = await check_account(username, account.password, account.sharedSecret);
-        console.log(res);
-        for (const key in res) {
-            if (Object.hasOwnProperty.call(res, key)) {
-                account[key] = res[key];
+    setAccountStatus(username, STATUS.CHECKING);
+
+    let lastError = null;
+    let lastStatus = STATUS.ERROR;
+
+    for (let attempt = 1; attempt <= CHECK_MAX_ATTEMPTS; attempt++) {
+        try {
+            const res = await check_account(username, account.password, account.sharedSecret);
+            logger.debug('Account check completed', { account: username, op: 'check', attempt });
+            // Re-read: earlier attempts / concurrent updates may have changed it.
+            const current = db.get(username) || account;
+            for (const key in res) {
+                if (Object.hasOwnProperty.call(res, key)) {
+                    current[key] = res[key];
+                }
             }
+            current.status = STATUS.SUCCESS;
+            db.set(username, current);
+            if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+            return res;
+        } catch (error) {
+            lastError = error;
+            lastStatus = statusFromCheckError(error);
+            logger.warn('Account check attempt failed', {
+                account: username, op: 'check', attempt, status: lastStatus, error
+            });
+
+            if (shouldRetry({ attempt, maxAttempts: CHECK_MAX_ATTEMPTS, status: lastStatus })) {
+                const delay = backoffDelay({ attempt, status: lastStatus });
+                setAccountStatus(username, lastStatus);
+                await new Promise(p => setTimeout(p, delay));
+                continue;
+            }
+            break;
         }
-        db.set(username, account);
-        return res;
-    } catch (error) {
-        console.log(error);
-        account.error = error;
-        db.set(username, account);
-        return { error: error };
     }
+
+    logger.error('Account check failed', { account: username, op: 'check', status: lastStatus, error: lastError });
+    const message = checkErrorMessage(lastError);
+    const current = db.get(username) || account;
+    current.error = message;
+    current.status = lastStatus;
+    db.set(username, current);
+    if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+    return { error: message, status: lastStatus };
 }
 
 ipcMain.handle('ready', () => {
@@ -478,16 +653,40 @@ ipcMain.handle('accounts:import', async (event) => {
         return;
     }
     file = file.filePaths[0];
-    let accs = fs.readFileSync(file).toString().split('\n').map(x => x.trim().split(':')).filter(x => x && x.length == 2);
-    accs.forEach(acc => {
-        db.set(acc[0], {
-            password: acc[1],
-        });
+    const { accounts, skipped } = parseAccountLines(fs.readFileSync(file).toString());
+    accounts.forEach(acc => {
+        const existing = db.get(acc.username);
+        const entry = existing ? { ...existing } : {};
+        entry.password = acc.password;
+        // Preserve an existing shared secret when the imported line omits one.
+        if (acc.sharedSecret) {
+            entry.sharedSecret = acc.sharedSecret;
+        }
+        db.set(acc.username, entry);
     });
-    for (const acc of accs) {
-        process_check_account(acc[0]);
-        await new Promise(p => setTimeout(p, 200));
+    logger.info('Imported accounts', { op: 'import', imported: accounts.length, skipped });
+    // Route auto-checks through the bounded queue so at most `concurrency`
+    // steam-user logons happen at once instead of unbounded fire-and-forget.
+    const queue = getCheckQueue();
+    for (const acc of accounts) {
+        queue.add(() => process_check_account(acc.username)).catch((err) => {
+            logger.error('Queued import check failed', { account: acc.username, op: 'import', error: err });
+        });
     }
+    // Do not block the handler on the whole batch; the queue runs async and the
+    // renderer is updated per-account via 'accounts:updated'.
+});
+
+// Refresh-all path: check every stored account through the bounded queue.
+ipcMain.handle('accounts:check_all', () => {
+    const queue = getCheckQueue();
+    const usernames = Object.keys(db.JSON());
+    for (const username of usernames) {
+        queue.add(() => process_check_account(username)).catch((err) => {
+            logger.error('Queued refresh check failed', { account: username, op: 'refresh', error: err });
+        });
+    }
+    return usernames.length;
 });
 
 ipcMain.handle('accounts:export', async (event) => {
@@ -507,7 +706,10 @@ ipcMain.handle('accounts:export', async (event) => {
     if (file.canceled) {
         return;
     }
-    let accs = Object.entries(db.JSON()).map(x => x[0] + ':' + x[1].password).join(EOL);
+    let accs = Object.entries(db.JSON()).map(([username, data]) => {
+        const line = username + ':' + data.password;
+        return data.sharedSecret ? line + ':' + data.sharedSecret : line;
+    }).join(EOL);
     fs.writeFileSync(file.filePath, accs);
 });
 
@@ -527,6 +729,7 @@ function check_account(username, pass, sharedSecret) {
         const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
         currently_checking.push(username);
+        setAccountStatus(username, STATUS.LOGGING_IN);
 
         let Done = false;
         let attempts = 0;
@@ -535,6 +738,18 @@ function check_account(username, pass, sharedSecret) {
         let gcWelcomeReceived = false;
         let gcRankDataReady = false;
         let steamClient = new User();
+
+        // Steam Guard IPC listener registered for THIS check (if the renderer
+        // is prompted). Tracked here so every terminal path can tear it down;
+        // otherwise a listener registered for an account that keeps hitting
+        // Steam Guard would outlive its check and accumulate across retries.
+        let steamGuardResponseHandler = null;
+        function removeSteamGuardListener() {
+            if (steamGuardResponseHandler) {
+                ipcMain.removeListener('steam:steamguard:response', steamGuardResponseHandler);
+                steamGuardResponseHandler = null;
+            }
+        }
 
         let data = {
             prime: false,
@@ -560,13 +775,14 @@ function check_account(username, pass, sharedSecret) {
         function finish(resolveData) {
             if (Done) return;
             Done = true;
+            removeSteamGuardListener();
             if (gcHelloInterval) {
                 clearInterval(gcHelloInterval);
                 gcHelloInterval = null;
             }
             clearTimeout(outerTimeout);
             if (gcTimeout) clearTimeout(gcTimeout);
-            currently_checking = currently_checking.filter(x => x !== username);
+            clearCurrentlyChecking(username);
             if (resolveData) {
                 // Convert any remaining null rank fields back to 0 for backward
                 // compatibility with the UI (which expects numbers, not null)
@@ -609,7 +825,8 @@ function check_account(username, pass, sharedSecret) {
         });
 
         steamClient.on('disconnected', (eresult, msg) => {
-            currently_checking = currently_checking.filter(x => x !== username);
+            removeSteamGuardListener();
+            clearCurrentlyChecking(username);
         });
 
         steamClient.on('error', (e) => {
@@ -625,26 +842,44 @@ function check_account(username, pass, sharedSecret) {
                 default: errorStr = `Unknown: ${e.eresult}`;    break;
             }
             console.log(`[${username}] Login error: ${errorStr} (eresult=${e.eresult})`);
+            // A Steam-Guard-invalid result (eresult 65) on the shared-secret
+            // TOTP path is the classic symptom of a stale cached time offset:
+            // the process caches steamTimeOffset on first use and never
+            // refreshes it, so clock drift over a long-running session starts
+            // producing codes Steam rejects. Invalidate the cache so the next
+            // attempt re-fetches a fresh offset before generating a code.
+            if (e.eresult === 65) {
+                steamTimeOffset = null;
+            }
+            removeSteamGuardListener();
             if (gcHelloInterval) {
                 clearInterval(gcHelloInterval);
                 gcHelloInterval = null;
             }
             clearTimeout(outerTimeout);
             if (gcTimeout) clearTimeout(gcTimeout);
-            currently_checking = currently_checking.filter(x => x !== username);
+            clearCurrentlyChecking(username);
             if (!Done) {
                 Done = true;
-                reject(errorStr);
+                // Reject with the human-readable string as the message (UI
+                // compatibility) while carrying the eresult so the retry layer
+                // can classify the failure.
+                const rejection = new Error(errorStr);
+                rejection.eresult = e.eresult;
+                reject(rejection);
             }
         });
 
         steamClient.on('steamGuard', (domain, callback) => {
-            if (domain == null && sharedSecret && sharedSecret.length > 0) {
+            // Prefer the shared-secret TOTP path whenever a shared secret exists
+            // (works for both mobile-authenticator and, when Steam reports no
+            // email domain, app-based Steam Guard).
+            if (sharedSecret && sharedSecret.length > 0) {
                 if (steamTimeOffset == null) {
                     SteamTotp.getTimeOffset((err, offset) => {
                         if (err) {
-                            currently_checking = currently_checking.filter(x => x !== username);
-                            reject(`unable to get steam time offset`);
+                            clearCurrentlyChecking(username);
+                            reject(new Error('unable to get steam time offset'));
                             return;
                         }
                         steamTimeOffset = offset;
@@ -654,22 +889,38 @@ function check_account(username, pass, sharedSecret) {
                 }
                 callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
             } else if (!win) {
-                currently_checking = currently_checking.filter(x => x !== username);
-                reject(`steam guard missing`);
+                clearCurrentlyChecking(username);
+                const err = new Error('steam guard missing');
+                err.eresult = 63; // classify as steam_guard_required (non-retryable)
+                reject(err);
             } else {
+                setAccountStatus(username, STATUS.STEAM_GUARD_REQUIRED);
                 win.webContents.send('steam:steamguard', username);
-                ipcMain.once('steam:steamguard:response', async (event, code) => {
+                // Scope the response to THIS username so concurrent Steam Guard
+                // prompts never deliver one account's code to another's login.
+                // The renderer still replies on the shared channel with (code,
+                // username); we ignore responses meant for other accounts.
+                const responseHandler = (event, code, respondedUsername) => {
+                    if (respondedUsername != null && respondedUsername !== username) {
+                        return; // not for us - leave the listener in place
+                    }
+                    removeSteamGuardListener();
                     if (!code) {
-                        currently_checking = currently_checking.filter(x => x !== username);
-                        reject(`steam guard missing`);
+                        clearCurrentlyChecking(username);
+                        const err = new Error('steam guard missing');
+                        err.eresult = 63; // steam_guard_required (non-retryable)
+                        reject(err);
                     } else {
                         callback(code);
                     }
-                });
+                };
+                steamGuardResponseHandler = responseHandler;
+                ipcMain.on('steam:steamguard:response', responseHandler);
             }
         });
 
         steamClient.on('webSession', (sessionID, cookies) => {
+            setAccountStatus(username, STATUS.LOGGED_IN);
             sleep(1000).then(async () => {
                 if (Done) return;
                 const cookieHeader = cookies.join('; ') + ';';
@@ -726,7 +977,9 @@ function check_account(username, pass, sharedSecret) {
                     const accountMainHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=accountmain`);
                     if (accountMainHtml) {
                         if (looksLikeLoginPage(accountMainHtml)) {
-                            console.log(`[${username}] GCPD accountmain returned login page, skipping`);
+                            logger.warn('GCPD accountmain returned login page, skipping', { account: username });
+                        } else if (looksLikeErrorPage(accountMainHtml)) {
+                            logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
                         } else if (looksLikeGcpdPage(accountMainHtml)) {
                             const accountData = parseAccountMain(accountMainHtml);
                             if (accountData.ok) {
@@ -734,19 +987,32 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = accountData.cs2_player_level;
                                 }
                                 if (accountData.cs2_player_xp >= 0) {
-                                    data.exp = accountData.cs2_player_xp;
+                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value
+                                    const XP_BASE = 327680000;
+                                    const XP_PER_LEVEL = 5000;
+                                    if (accountData.cs2_player_xp > XP_BASE) {
+                                        let into = accountData.cs2_player_xp - XP_BASE;
+                                        if (into < 0) into = 0;
+                                        data.exp = into % XP_PER_LEVEL;
+                                    } else {
+                                        data.exp = accountData.cs2_player_xp;
+                                    }
                                 }
+
+                                // Final prime determination based on level/xp heuristic
+                                data.prime = (data.lvl > 1) || (data.exp > 0);
 
                                 const account = db.get(username);
                                 if (account) {
                                     if (data.lvl) account.lvl = data.lvl;
                                     if (data.exp) account.exp = data.exp;
+                                    account.prime = data.prime;
                                     db.set(username, account);
                                     if (win) win.webContents.send('accounts:updated', { login: username, data: account });
                                 }
                             }
                         } else {
-                            console.log(`[${username}] GCPD accountmain response not recognized as GCPD page`);
+                            logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
                         }
                     }
 
@@ -756,7 +1022,9 @@ function check_account(username, pass, sharedSecret) {
                     const matchmakingHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=matchmaking`);
                     if (matchmakingHtml) {
                         if (looksLikeLoginPage(matchmakingHtml)) {
-                            console.log(`[${username}] GCPD matchmaking returned login page, skipping`);
+                            logger.warn('GCPD matchmaking returned login page, skipping', { account: username });
+                        } else if (looksLikeErrorPage(matchmakingHtml)) {
+                            logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
                         } else if (looksLikeGcpdPage(matchmakingHtml)) {
                             const mmData = parseMatchmaking(matchmakingHtml);
                             if (mmData.ok) {
@@ -800,7 +1068,7 @@ function check_account(username, pass, sharedSecret) {
                                 data.last_game = new Date(lastGameMatch[1]);
                             }
                         } else {
-                            console.log(`[${username}] GCPD matchmaking response not recognized as GCPD page`);
+                            logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
                         }
                     }
 
@@ -889,22 +1157,32 @@ function check_account(username, pass, sharedSecret) {
                             return;
                         }
                         let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
-                        for (let i = 0; i < CMsgClientWelcome.outofdate_subscribed_caches.length; i++) {
-                            let outofdate_cache = CMsgClientWelcome.outofdate_subscribed_caches[i];
-                            for (let j = 0; j < outofdate_cache.objects.length; j++) {
-                                let cache_object = outofdate_cache.objects[j];
+                        // protoDecode returns {} on failure - guard every field.
+                        const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
+                            ? CMsgClientWelcome.outofdate_subscribed_caches
+                            : [];
+                        for (let i = 0; i < outofdateCaches.length; i++) {
+                            let outofdate_cache = outofdateCaches[i];
+                            const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
+                            for (let j = 0; j < cacheObjects.length; j++) {
+                                let cache_object = cacheObjects[j];
+                                if (!cache_object || !Array.isArray(cache_object.object_data)) {
+                                    continue;
+                                }
                                 if (cache_object.object_data.length == 0) {
                                     continue;
                                 }
                                 switch (cache_object.type_id) {
                                     case 7: {
                                         let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                        if (CSOEconGameAccountClient.elevated_state == 5) {
-                                            data.prime = true;
-                                            console.log(`[${username}] Has Prime status`);
-                                        } else {
-                                            data.prime = false;
-                                            console.log(`[${username}] No Prime status`);
+                                        // elevated_state is only a PRELIMINARY hint. The authoritative
+                                        // Prime determination is the level/XP heuristic applied last in
+                                        // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
+                                        // handlers - do not let this overwrite a heuristic result that
+                                        // has already been established (lvl > 1 or exp > 0).
+                                        if (!((data.lvl > 1) || (data.exp > 0))) {
+                                            data.prime = CSOEconGameAccountClient.elevated_state >= 4;
+                                            console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
                                         }
 
                                         sleep(1000).then(function() {
@@ -952,14 +1230,22 @@ function check_account(username, pass, sharedSecret) {
                                 steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
                             });
                         } else {
-                            data.penalty_reason = steamClient.limitations.communityBanned ? 'Community ban' : msg.penalty_reason > 0 ? penalty_reason_string(msg.penalty_reason) : msg.vac_banned ? 'VAC' : 0;
-                            data.penalty_seconds = msg.vac_banned || steamClient.limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason) ? -1 : msg.penalty_seconds > 0 ? (Math.floor(Date.now() / 1000) + msg.penalty_seconds) : 0;
-                            data.wins = msg.vac_banned ? -1 : attempts < 5 ? msg.ranking.wins : 0;
-                            data.rank = msg.vac_banned ? -1 : attempts < 5 ? msg.ranking.rank_id : 0;
-                            data.name = steamClient.accountInfo.name;
+                            // Guard every field: protoDecode may return {} and
+                            // msg.ranking may be absent when attempts hit the cap.
+                            const limitations = steamClient.limitations || {};
+                            const ranking = msg.ranking || {};
+                            const haveRanking = attempts < 5 && msg.ranking != null;
+                            data.penalty_reason = limitations.communityBanned ? 'Community ban' : msg.penalty_reason > 0 ? penalty_reason_string(msg.penalty_reason) : msg.vac_banned ? 'VAC' : 0;
+                            data.penalty_seconds = msg.vac_banned || limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason) ? -1 : msg.penalty_seconds > 0 ? (Math.floor(Date.now() / 1000) + msg.penalty_seconds) : 0;
+                            data.wins = msg.vac_banned ? -1 : haveRanking ? (ranking.wins || 0) : 0;
+                            data.rank = msg.vac_banned ? -1 : haveRanking ? (ranking.rank_id || 0) : 0;
+                            data.name = (steamClient.accountInfo && steamClient.accountInfo.name) || data.name || username;
                             data.lvl = msg.player_level || data.lvl;
                             data.steamid = steamClient.steamID.getSteamID64();
                             data.error = null;
+
+                            // Final prime determination based on level/xp heuristic
+                            data.prime = (data.lvl > 1) || (data.exp > 0);
 
                             // Save prime status
                             let account = db.get(username);
@@ -985,8 +1271,15 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = profile.player_level;
                                 }
                                 if (profile.player_cur_xp && profile.player_cur_xp > 0) {
-                                    data.exp = profile.player_cur_xp;
+                                    // Convert raw absolute XP to XP-within-level
+                                    const XP_BASE = 327680000;
+                                    const XP_PER_LEVEL = 5000;
+                                    let into = profile.player_cur_xp - XP_BASE;
+                                    if (into < 0) into = 0;
+                                    data.exp = into % XP_PER_LEVEL;
                                 }
+                                // Final prime determination based on level/xp heuristic
+                                data.prime = (data.lvl > 1) || (data.exp > 0);
                                 // Extract rankings from profile
                                 if (profile.rankings && profile.rankings.length > 0) {
                                     for (let r = 0; r < profile.rankings.length; r++) {
@@ -1075,5 +1368,11 @@ function check_account(username, pass, sharedSecret) {
 }
 
 process.on('uncaughtException', err => {
-  console.error('uncaughtException', err);
+  logger.error('uncaughtException', { op: 'process', error: err });
+})
+
+process.on('unhandledRejection', reason => {
+  // Route through the redacting logger so any secrets carried on the rejection
+  // (passwords, shared secrets, cookies) are stripped before being written.
+  logger.error('unhandledRejection', { op: 'process', error: reason });
 })

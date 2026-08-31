@@ -138,39 +138,69 @@ class EncryptedStorage {
         throw new Error(`Cannot read & write on path "${filePath}". Check permissions!`);
       }
       if (stats.size > 0) {
+        // Read and parse asynchronously via a microtask so that any failure is
+        // reported through the 'error' event (consistent with the decryption
+        // path) rather than thrown from the constructor. Crucially, this path
+        // NEVER writes to disk, so a wrong password / corrupted / truncated
+        // file can never overwrite or truncate the existing data.
         let data;
         try {
           data = fs.readFileSync(filePath);
         } catch (err) {
-          throw err;
+          Promise.resolve().then(() => this.emit('error', err));
+          return;
         }
-        if (validateJSON(data)) {
-          const input_data = JSON.parse(data);
-  
+
+        let input_data;
+        try {
+          if (!validateJSON(data)) {
+            throw new Error('Given filePath is not empty and its content is not valid JSON.');
+          }
+          input_data = JSON.parse(data);
           if (!input_data.iv || !input_data.salt || !input_data.data) {
             throw new Error('Invalid file');
           }
-  
-          this.iv = input_data.iv;
-          this.salt = input_data.salt;
-  
-          deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
-            try {
-              this.derivedKey = derivedKey;
-      
-              const decryptTool = crypto.createDecipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
-              let decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
-              decryptedData += decryptTool.final("utf8");
-
-              if (validateJSON(decryptedData)) {
-                this.storage = JSON.parse(decryptedData);
-              }
-              this.emit('loaded');
-            } catch (error) {
-              this.emit('error', error);
-            }
-          });
+        } catch (err) {
+          Promise.resolve().then(() => this.emit('error', err));
+          return;
         }
+
+        this.iv = input_data.iv;
+        this.salt = input_data.salt;
+
+        deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
+          try {
+            this.derivedKey = derivedKey;
+
+            const decryptTool = crypto.createDecipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
+            let decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
+            decryptedData += decryptTool.final("utf8");
+
+            if (validateJSON(decryptedData)) {
+              this.storage = JSON.parse(decryptedData);
+            }
+            this.emit('loaded');
+          } catch (error) {
+            // Decryption failed (BAD_DECRYPT / wrong password / corrupted
+            // ciphertext / invalid JSON). Do NOT write anything; just report.
+            this.emit('error', error);
+          }
+        }).catch(error => {
+          this.emit('error', error);
+        });
+      } else {
+        // Zero-byte / empty existing file: treat as a loadable-empty database.
+        // Generate fresh iv/salt and derive the key so the DB is usable, but do
+        // not write until the caller performs a sync.
+        this.iv = crypto.randomBytes(16).toString('hex');
+        this.salt = generateSalt(12);
+
+        deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
+          this.derivedKey = derivedKey;
+          this.emit('loaded');
+        }).catch(error => {
+          this.emit('error', error);
+        });
       }
     }
     else {
@@ -205,14 +235,29 @@ class EncryptedStorage {
       data: encryptedData
     })
 
+    // Atomic write: write to a temporary file first, then rename it over the
+    // target. fs.renameSync is atomic on the same filesystem, so a crash
+    // mid-write can never leave the database in a partially-written state.
+    const tmpPath = this.filePath + '.tmp';
+
     if (this.options && this.options.asyncWrite) {
-      fs.writeFile(this.filePath, finalJson, (err) => {
+      fs.writeFile(tmpPath, finalJson, (err) => {
         if (err) throw err;
+        try {
+          fs.renameSync(tmpPath, this.filePath);
+        } catch (renameErr) {
+          try { fs.unlinkSync(tmpPath); } catch (e) { /* ignore cleanup failure */ }
+          throw renameErr;
+        }
       });
     } else {
       try {
-        fs.writeFileSync(this.filePath, finalJson);
+        fs.writeFileSync(tmpPath, finalJson);
+        fs.renameSync(tmpPath, this.filePath);
       } catch (err) {
+        // Clean up any leftover temp file so a failed sync leaves no debris and
+        // the original target intact.
+        try { fs.unlinkSync(tmpPath); } catch (e) { /* ignore cleanup failure */ }
         if (err.code === 'EACCES') {
           throw new Error(`Cannot access path "${this.filePath}".`);
         } else {

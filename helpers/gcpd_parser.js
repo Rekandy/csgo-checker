@@ -140,11 +140,42 @@ function headerContainsAnyCell(table, needles) {
   return false;
 }
 
+// Localized keyword lists for dynamic header detection across common Steam locales.
+// These are used so that reordered or translated column headers are still matched.
+// English, German, Russian, French, Spanish, Italian, Portuguese (Brazil).
+const KEYWORDS_SKILL = ['Skill', 'Skill Group', 'Rating', 'Fähigkeit', 'Ранг', 'Навык', 'Compétence', 'Habilidad', 'Abilità', 'Habilidade'];
+const KEYWORDS_WINS = ['Wins', 'Siege', 'Победы', 'Побед', 'Victoires', 'Victorias', 'Vittorie', 'Vitórias'];
+const KEYWORDS_COOLDOWN = ['Cooldown', 'Abklingzeit', 'Sperre', 'Блокировка', 'Ожидание', 'Тайм-аут', 'Pénalité', 'Sanction', 'Penalización', 'Penalità', 'Penalidade'];
+const KEYWORDS_MM_MODE = ['Matchmaking Mode', 'Matchmaking-Modus', 'Режим матчмейкинга', 'Режим', 'Mode de matchmaking', 'Modo de emparejamiento', 'Modalità matchmaking', 'Modo de matchmaking'];
+const KEYWORDS_MAP = ['Map', 'Mappa', 'Mapa', 'Carte', 'Karte', 'Карта'];
+
+/**
+ * Find the index of the first header cell that matches any of the given keywords.
+ * @param {string[]} header - header row cells
+ * @param {string[]} needles - keywords to look for
+ * @returns {number} column index, or -1 if none match
+ */
+function findColumn(header, needles) {
+  if (!header) return -1;
+  for (let c = 0; c < header.length; c++) {
+    for (let j = 0; j < needles.length; j++) {
+      if (containsCI(header[c], needles[j])) return c;
+    }
+  }
+  return -1;
+}
+
 /**
  * Parse matchmaking data from GCPD 590/matchmaking HTML.
  *
  * Extracts Premier rating/wins, Wingman rank/wins, and active cooldowns.
  * Uses dynamic column detection from the table header row.
+ *
+ * Unknown sentinels: numeric fields stay at 0 when the value cannot be
+ * determined; cooldown_expires_unix is 0 when there is no cooldown and
+ * COOLDOWN_NEVER (-1) for a permanent cooldown. `ok` is false when the input
+ * is null/empty/malformed or contains no parseable GCPD tables. This function
+ * never throws and never fabricates values.
  *
  * @param {string} html - Full HTML of the GCPD matchmaking page
  * @returns {{ok: boolean, premier_rating: number, premier_wins: number, wingman_rank: number, wingman_wins: number, cooldown_expires_unix: number, cooldown_reason: string}}
@@ -160,9 +191,16 @@ function parseMatchmaking(html) {
     cooldown_reason: ''
   };
 
-  const tables = extractTables(html);
+  let tables;
+  try {
+    tables = extractTables(html);
+  } catch (e) {
+    return result;
+  }
   if (tables.length === 0) return result;
   result.ok = true;
+
+  try {
 
   const nowSeconds = Math.floor(Date.now() / 1000);
 
@@ -173,7 +211,7 @@ function parseMatchmaking(html) {
     if (header.length === 0) continue;
 
     // Cooldown table
-    if (containsCI(header[0], 'Cooldown')) {
+    if (findColumn(header, KEYWORDS_COOLDOWN) === 0 || containsCI(header[0], 'Cooldown')) {
       for (let i = 1; i < tbl.length; i++) {
         const row = tbl[i];
         if (row.length === 0) continue;
@@ -200,28 +238,27 @@ function parseMatchmaking(html) {
     }
 
     // Matchmaking Mode table
-    if (containsCI(header[0], 'Matchmaking Mode')) {
+    if (findColumn(header, KEYWORDS_MM_MODE) === 0 || containsCI(header[0], 'Matchmaking Mode')) {
       // Skip map-specific tables (localized map header keywords)
-      if (headerContainsAnyCell(tbl, ['Map', 'Mappa', 'Mapa', 'Carte', 'Karte'])) {
+      if (headerContainsAnyCell(tbl, KEYWORDS_MAP)) {
         continue;
       }
 
-      // Dynamically find column indices for Skill and Wins
-      let skillCol = -1;
-      let winsCol = -1;
-      for (let c = 0; c < header.length; c++) {
-        if (skillCol < 0 && containsCI(header[c], 'Skill')) skillCol = c;
-        if (winsCol < 0 && containsCI(header[c], 'Wins')) winsCol = c;
+      // Dynamically find column indices for Skill and Wins from the header row.
+      const skillCol = findColumn(header, KEYWORDS_SKILL);
+      const winsCol = findColumn(header, KEYWORDS_WINS);
+      // If neither column can be identified from the header, skip this table
+      // rather than guessing wrong columns (guessing wrong is worse than
+      // returning unknown).
+      if (skillCol < 0 && winsCol < 0) {
+        continue;
       }
-      // Default columns if not found in header
-      if (skillCol < 0) skillCol = 4;
-      if (winsCol < 0) winsCol = 1;
 
       for (let i = 1; i < tbl.length; i++) {
         const row = tbl[i];
         if (row.length === 0) continue;
-        const skill = row.length > skillCol ? toInt(row[skillCol], -1) : -1;
-        const wins = row.length > winsCol ? toInt(row[winsCol], -1) : -1;
+        const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
+        const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
         if (skill < 0 && wins < 0) continue;
 
         if (containsCI(row[0], 'Premier')) {
@@ -236,6 +273,12 @@ function parseMatchmaking(html) {
     }
   }
 
+  } catch (e) {
+    // Never throw: return whatever was parsed so far (ok stays true because
+    // tables were present), leaving unknown fields at their sentinels.
+    return result;
+  }
+
   return result;
 }
 
@@ -243,6 +286,11 @@ function parseMatchmaking(html) {
  * Parse account main data from GCPD 590/accountmain HTML.
  *
  * Extracts CS2 player level and XP by searching for known labels in cell text.
+ *
+ * Unknown sentinels: cs2_player_level and cs2_player_xp stay at -1 when the
+ * label cannot be found. `ok` is false when the input is null/empty/malformed
+ * or contains no parseable GCPD tables. This function never throws and never
+ * fabricates values.
  *
  * @param {string} html - Full HTML of the GCPD accountmain page
  * @returns {{ok: boolean, cs2_player_level: number, cs2_player_xp: number}}
@@ -254,9 +302,16 @@ function parseAccountMain(html) {
     cs2_player_xp: -1
   };
 
-  const tables = extractTables(html);
+  let tables;
+  try {
+    tables = extractTables(html);
+  } catch (e) {
+    return result;
+  }
   if (tables.length === 0) return result;
   result.ok = true;
+
+  try {
 
   // Concatenate all cell text into a single blob for label searching
   let blob = '';
@@ -307,32 +362,71 @@ function parseAccountMain(html) {
     'XP'
   ]);
 
+  } catch (e) {
+    // Never throw: return whatever was parsed so far.
+    return result;
+  }
+
   return result;
 }
 
 /**
  * Check if the HTML looks like a valid GCPD page.
+ * Null/empty-safe: returns false for missing input.
  * @param {string} html
  * @returns {boolean}
  */
 function looksLikeGcpdPage(html) {
+  if (!html) return false;
   return containsCI(html, 'generic_kv_table') ||
          containsCI(html, 'Personal Game Data');
 }
 
 /**
  * Check if the HTML looks like a Steam login/redirect page.
+ * Null/empty-safe: returns false for missing input.
  * @param {string} html
  * @returns {boolean}
  */
 function looksLikeLoginPage(html) {
+  if (!html) return false;
   return containsCI(html, 'g_steamID = false') ||
-         containsCI(html, '<title>Sign In');
+         containsCI(html, '<title>Sign In') ||
+         containsCI(html, 'https://steamcommunity.com/login/home') ||
+         containsCI(html, 'login_area');
+}
+
+/**
+ * Check if the HTML looks like a Steam error / unavailable page, such as a
+ * private profile, an access-denied notice, or a generic Steam error page.
+ * Callers should treat a positive result as "data unavailable" and leave
+ * fields at their unknown sentinels rather than parsing the page as data.
+ * Null/empty-safe: returns false for missing input.
+ * @param {string} html
+ * @returns {boolean}
+ */
+function looksLikeErrorPage(html) {
+  if (!html) return false;
+  return containsCI(html, 'error_ctn') ||
+         containsCI(html, 'profile_private_info') ||
+         containsCI(html, 'This profile is private') ||
+         containsCI(html, 'This profile is unavailable') ||
+         containsCI(html, 'The specified profile could not be found') ||
+         containsCI(html, 'The specified profile is private') ||
+         containsCI(html, 'You need a valid game license to access this page') ||
+         // Steam's generic error page wraps its message in a dedicated
+         // container (id="error_box"). Match that specific marker rather than
+         // the bare "sectionText" class, which also appears on legitimate
+         // Steam pages and would misclassify valid GCPD pages as unavailable.
+         containsCI(html, 'id="error_box"') ||
+         containsCI(html, 'error_box_top');
 }
 
 module.exports = {
   parseMatchmaking,
   parseAccountMain,
   looksLikeGcpdPage,
-  looksLikeLoginPage
+  looksLikeLoginPage,
+  looksLikeErrorPage,
+  COOLDOWN_NEVER
 };
