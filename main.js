@@ -191,6 +191,83 @@ function beforeWindowInputHandler(window, event, input) {
     }
 }
 
+/**
+ * Show the password prompt window and resolve with the entered password.
+ * Preserves the original behavior: quits the app if the window is closed
+ * without a response, and passes the last error message to the dialog.
+ * @param {string|null} error_message previous error to display, if any
+ * @returns {Promise<string>}
+ */
+function promptForPassword(error_message) {
+    return new Promise((resolve, reject) => {
+        passwordPromptResponse = null;
+        let promptWindow = new BrowserWindow({
+            ...browserWindowOptions,
+            width: 500,
+            height: 280,
+            resizable: false,
+            show: false
+        });
+        promptWindow.removeMenu();
+        applyNavigationGuards(promptWindow.webContents);
+        promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
+            promptWindow.webContents.send('password_dialog:init', error_message);
+        })
+        promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
+        promptWindow.once('ready-to-show', () => promptWindow.show())
+        promptWindow.on('closed', () => {
+            if (passwordPromptResponse == null) {
+                return app.quit();
+            }
+            resolve(passwordPromptResponse);
+            promptWindow = null;
+        })
+        promptWindow.webContents.on('render-process-gone', (event, detailed) => {
+          console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
+        });
+    });
+}
+
+/**
+ * Open the encrypted account DB with the given password, resolving once it is
+ * loaded and rejecting on any (sync or async) decryption error.
+ * @param {string} pass
+ * @returns {Promise<EncryptedStorage>}
+ */
+function openEncryptedDb(pass) {
+    return new Promise((res, rej) => {
+        try {
+            let db = new EncryptedStorage(ACCOUNTS_ENCRYPTED_PATH, pass);
+            db.on('error', rej);//this is for async errors
+            db.on('loaded', () => res(db));
+        } catch (error) {
+            rej(error);
+        }
+    });
+}
+
+/**
+ * Normalize a decrypt/open error into the human-readable string the password
+ * dialog displays, preserving the original mapping (BAD_DECRYPT -> "Invalid
+ * password", error.code, else stringified). String errors pass through.
+ * @param {*} error
+ * @returns {string}
+ */
+function normalizeDecryptError(error) {
+    if (typeof error != 'string') {
+        if (error.reason == 'BAD_DECRYPT') {
+            return 'Invalid password';
+        }
+        else if (error.code) {
+            return error.code;
+        }
+        else {
+            return error.toString();
+        }
+    }
+    return error;
+}
+
 async function openDB() {
     try {
         if (db) {
@@ -200,61 +277,16 @@ async function openDB() {
         if (settings.get('encrypted')) {
             let error_message = null;
             while (true) {
-                let pass = await new Promise((resolve, reject) => {
-                    passwordPromptResponse = null;
-                    let promptWindow = new BrowserWindow({
-                        ...browserWindowOptions,
-                        width: 500,
-                        height: 280,
-                        resizable: false,
-                        show: false
-                    });
-                    promptWindow.removeMenu();
-                    applyNavigationGuards(promptWindow.webContents);
-                    promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
-                        promptWindow.webContents.send('password_dialog:init', error_message);
-                    })
-                    promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
-                    promptWindow.once('ready-to-show', () => promptWindow.show())
-                    promptWindow.on('closed', () => {
-                        if (passwordPromptResponse == null) {
-                            return app.quit();
-                        }
-                        resolve(passwordPromptResponse);
-                        promptWindow = null;
-                    })
-                    promptWindow.webContents.on('render-process-gone', (event, detailed) => {
-                      console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
-                    });
-                });
+                let pass = await promptForPassword(error_message);
                 try {
                     if (pass == null || pass.length == 0) {
                         throw 'Password can not be empty';
                     }
-                    db = await new Promise((res, rej) => {
-                        try {
-                            let db = new EncryptedStorage(ACCOUNTS_ENCRYPTED_PATH, pass);
-                            db.on('error', rej);//this is for async errors
-                            db.on('loaded', () => res(db));
-                        } catch (error) {
-                            rej(error);
-                        }
-                    })
+                    db = await openEncryptedDb(pass);
                     //we decrypted successfully, exit loop
                     break;
                 } catch (error) {
-                    if (typeof error != 'string') {
-                        if (error.reason == 'BAD_DECRYPT') {
-                            error = 'Invalid password';
-                        }
-                        else if (error.code) {
-                            error = error.code;
-                        }
-                        else {
-                            error = error.toString();
-                        }
-                    }
-                    error_message = error;
+                    error_message = normalizeDecryptError(error);
                 }
             }
             return;
