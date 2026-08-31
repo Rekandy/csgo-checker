@@ -980,10 +980,9 @@ function check_account(username, pass, sharedSecret) {
                     return null;
                 }
 
-                try {
-                    // Sequential requests with 1s delay between each to avoid rate limiting
-
-                    // 1. Profile page (for name)
+                // 1. Profile page (for name). Fetches the community profile and
+                // stores the persona name. Closes over the check scope.
+                async function fetchProfileName() {
                     const profileHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}`);
                     if (profileHtml) {
                         const nameMatch = /class="[^"]*persona_name_text_content[^"]*"[^>]*>([^<]+)</.exec(profileHtml);
@@ -997,17 +996,17 @@ function check_account(username, pass, sharedSecret) {
                             }
                         }
                     }
+                }
 
-                    await sleep(1000);
-
-                    // 2. Account main page (for level and XP)
+                // 2. Account main page (for level and XP).
+                async function fetchAccountMain() {
                     const accountMainHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=accountmain`);
-                    if (accountMainHtml) {
-                        if (looksLikeLoginPage(accountMainHtml)) {
-                            logger.warn('GCPD accountmain returned login page, skipping', { account: username });
-                        } else if (looksLikeErrorPage(accountMainHtml)) {
-                            logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
-                        } else if (looksLikeGcpdPage(accountMainHtml)) {
+                    if (!accountMainHtml) return;
+                    if (looksLikeLoginPage(accountMainHtml)) {
+                        logger.warn('GCPD accountmain returned login page, skipping', { account: username });
+                    } else if (looksLikeErrorPage(accountMainHtml)) {
+                        logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
+                    } else if (looksLikeGcpdPage(accountMainHtml)) {
                             const accountData = parseAccountMain(accountMainHtml);
                             if (accountData.ok) {
                                 if (accountData.cs2_player_level >= 0) {
@@ -1040,21 +1039,20 @@ function check_account(username, pass, sharedSecret) {
                                     if (win) win.webContents.send('accounts:updated', { login: username, data: account });
                                 }
                             }
-                        } else {
-                            logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
-                        }
+                    } else {
+                        logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
                     }
+                }
 
-                    await sleep(1000);
-
-                    // 3. Matchmaking page (for ranks, wins, cooldowns, maps)
+                // 3. Matchmaking page (for ranks, wins, cooldowns, maps).
+                async function fetchMatchmaking() {
                     const matchmakingHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=matchmaking`);
-                    if (matchmakingHtml) {
-                        if (looksLikeLoginPage(matchmakingHtml)) {
-                            logger.warn('GCPD matchmaking returned login page, skipping', { account: username });
-                        } else if (looksLikeErrorPage(matchmakingHtml)) {
-                            logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
-                        } else if (looksLikeGcpdPage(matchmakingHtml)) {
+                    if (!matchmakingHtml) return;
+                    if (looksLikeLoginPage(matchmakingHtml)) {
+                        logger.warn('GCPD matchmaking returned login page, skipping', { account: username });
+                    } else if (looksLikeErrorPage(matchmakingHtml)) {
+                        logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
+                    } else if (looksLikeGcpdPage(matchmakingHtml)) {
                             const mmData = parseMatchmaking(matchmakingHtml);
                             if (mmData.ok) {
                                 // GCPD is a GAP-FILLER for ranks: the GC handlers
@@ -1100,10 +1098,18 @@ function check_account(username, pass, sharedSecret) {
                             if (lastGameMatch) {
                                 data.last_game = new Date(lastGameMatch[1]);
                             }
-                        } else {
-                            logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
-                        }
+                    } else {
+                        logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
                     }
+                }
+
+                try {
+                    // Sequential requests with 1s delay between each to avoid rate limiting
+                    await fetchProfileName();
+                    await sleep(1000);
+                    await fetchAccountMain();
+                    await sleep(1000);
+                    await fetchMatchmaking();
 
                     // If GC rank data is already done, finish immediately.
                     // Otherwise wait up to 5s for GC rank data before finishing.
