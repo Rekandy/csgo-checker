@@ -279,7 +279,7 @@ async function openDB() {
             while (true) {
                 let pass = await promptForPassword(error_message);
                 try {
-                    if (pass == null || pass.length == 0) {
+                    if (pass == null || pass.length === 0) {
                         throw 'Password can not be empty';
                     }
                     db = await openEncryptedDb(pass);
