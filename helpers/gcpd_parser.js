@@ -97,18 +97,24 @@ function extractTables(html) {
   // Match table elements whose class attribute contains "generic_kv_table"
   const tableRegex = /<table[^>]*class\s*=\s*"[^"]*generic_kv_table[^"]*"[^>]*>([\s\S]*?)<\/table>/gi;
   let tableMatch;
+  // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
+  // returns null when exhausted. The assignment in the condition is intentional.
   while ((tableMatch = tableRegex.exec(html)) !== null) {
     const tableHtml = tableMatch[1];
     const rows = [];
     // Extract rows
     const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
     let rowMatch;
+    // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
+    // returns null when exhausted. The assignment in the condition is intentional.
     while ((rowMatch = rowRegex.exec(tableHtml)) !== null) {
       const rowHtml = rowMatch[1];
       const cells = [];
       // Extract cells (th or td)
       const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
       let cellMatch;
+      // Idiomatic global-regex iteration: exec() advances lastIndex on each call and
+      // returns null when exhausted. The assignment in the condition is intentional.
       while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
         cells.push(stripTags(cellMatch[1]));
       }

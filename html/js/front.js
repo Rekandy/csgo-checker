@@ -57,7 +57,9 @@ function getRankImage(rank, wins, type) {
     if (rank <= 0) {
       rank = 0;
     }
-    if (rank == 0 && wins >= 10) {
+    // rank may arrive as a number or a numeric string from stored data; normalize
+    // before the zero check so expired-rank detection (rank 0 with >= 10 wins) holds.
+    if (Number(rank) === 0 && wins >= 10) {
       return prefix + '_expired.svg';
     }
     return prefix + rank + '.svg';

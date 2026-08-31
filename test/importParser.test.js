@@ -14,7 +14,8 @@ test('parses plain user:pass lines', () => {
 });
 
 test('parses user:pass:shared_secret', () => {
-    // 28-char base64 shared secret ending in '='.
+    // Synthetic (fake) 28-char base64 shared-secret string ending in '=', used only to
+    // exercise the user:pass:shared_secret parser. Not a real credential.
     const secret = 'abcdEFGHijklMNOPqrstUVWXyz0=';
     const { accounts, skipped } = parseAccountLines(`alice:mypassword:${secret}`);
     assert.strictEqual(skipped, 0);
@@ -33,6 +34,7 @@ test('password containing a colon is preserved (no secret)', () => {
 });
 
 test('password with colon plus trailing shared secret', () => {
+    // Synthetic (fake) shared-secret string used only as a parser test fixture. Not a real credential.
     const secret = 'ABCDEFGHIJKLMNOPQRSTUVWX1234';
     const { accounts } = parseAccountLines(`alice:pa:ss:word:${secret}`);
     assert.deepStrictEqual(accounts, [

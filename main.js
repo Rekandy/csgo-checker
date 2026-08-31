@@ -988,7 +988,9 @@ function check_account(username, pass, sharedSecret) {
                                     data.lvl = accountData.cs2_player_level;
                                 }
                                 if (accountData.cs2_player_xp >= 0) {
-                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value
+                                    // Convert raw absolute XP to XP-within-level if it looks like a raw value.
+                                    // 327680000 is the intentional CS2 XP base constant (well below
+                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
                                     const XP_BASE = 327680000;
                                     const XP_PER_LEVEL = 5000;
                                     if (accountData.cs2_player_xp > XP_BASE) {
@@ -1055,12 +1057,12 @@ function check_account(username, pass, sharedSecret) {
                                     const mapMatch = /<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>/.exec(row);
                                     if (mapMatch) {
                                         mapsData[mapMatch[1].trim()] = {
-                                            wins: parseInt(mapMatch[2]),
-                                            ties: parseInt(mapMatch[3]),
-                                            losses: parseInt(mapMatch[4]),
+                                            wins: parseInt(mapMatch[2], 10),
+                                            ties: parseInt(mapMatch[3], 10),
+                                            losses: parseInt(mapMatch[4], 10),
                                             skill_group: mapMatch[5].trim() || null,
                                             last_match: mapMatch[6],
-                                            region: parseInt(mapMatch[7])
+                                            region: parseInt(mapMatch[7], 10)
                                         };
                                     }
                                 });
