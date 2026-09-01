@@ -53,8 +53,7 @@ function showToast(text, color, permanent = false) {
       break;
   }
   let toast_div = newToast.querySelector('.toast');
-  toast_div.classList.add('text-' + fg);
-  toast_div.classList.add('bg-' + color);
+  toast_div.classList.add('text-' + fg, 'bg-' + color);
   if (!permanent) {
     toast_div.querySelector('button.btn-close').remove();
   }
@@ -123,10 +122,12 @@ function buildIdentitySearchStrings(login, account) {
   if (account.tags) {
     account.tags.forEach(tag => strings.push(tag));
   }
-  strings.push(account.prime ? "prime" : null);
-  strings.push(account.error ?? null);
-  strings.push(formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1));
-  strings.push(account.steamid ? "" + account.steamid : null);
+  strings.push(
+    account.prime ? "prime" : null,
+    account.error ?? null,
+    formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1),
+    account.steamid ? "" + account.steamid : null
+  );
   return strings;
 }
 
@@ -155,7 +156,7 @@ function execSearch(q, login, account) {
   let strings = buildSearchStrings(login, account);
 
   return q.toLowerCase().split(' ').map(x => {
-    return strings.find(v => v && v.toLowerCase().includes(x)) != undefined
+    return strings.some(v => v?.toLowerCase().includes(x))
   }).reduce((prev, cur) => prev && cur, true);
 }
 
@@ -235,7 +236,7 @@ function computeSortOrder(col_name, new_sort_dir) {
   const transform = SORT_COLUMN_TRANSFORMS[col_name];
   if (transform) {
     accounts = accounts.map(a => {
-      let clone = Object.assign({}, a[1]);
+      const clone = { ...a[1] };
       transform(clone, col_name);
       return [a[0], clone];
     });
@@ -998,7 +999,7 @@ document.addEventListener('DOMContentLoaded', () => {
       mapsTableBody.innerHTML = '';
       
       // Если у аккаунта есть данные о картах, отображаем их
-      if (account && account.maps) {
+      if (account?.maps) {
         // Сортируем карты по количеству побед (по убыванию)
         const sortedMaps = Object.entries(account.maps).sort((a, b) => b[1].wins - a[1].wins);
         

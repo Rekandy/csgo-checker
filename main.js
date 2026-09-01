@@ -1100,7 +1100,7 @@ function check_account(username, pass, sharedSecret) {
 
         steamClient.on('steamGuard', (domain, callback) => {
             // Prefer the shared-secret TOTP path whenever a shared secret exists.
-            if (sharedSecret && sharedSecret.length > 0) {
+            if (sharedSecret?.length > 0) {
                 answerSteamGuardWithSharedSecret(callback);
             } else if (win) {
                 answerSteamGuardViaRenderer(callback);
