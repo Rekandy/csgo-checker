@@ -1,0 +1,7 @@
+{
+  "task_id": "task-deep-audit-2",
+  "task_description": "Second, deeper technical audit of the csgo-checker (CS2 account checker) Electron app after the prior refactoring pass. Analyze architecture first, then produce a structured 9-section audit report covering all 10 domains (security, Electron security, dependencies, error handling, resource leaks, Steam/GC/protobuf validation, testing, architecture, performance, code quality). Then fix ONLY the real, safe issues with justification and regression tests, preserving all rank/XP/GC/matchmaking/protobuf invariants and changing no application behavior. Primary real defect: DOM-XSS attribute-injection in the maps-rating modal (html/js/front.js) where GCPD-scraped map name / skill_group are interpolated into innerHTML alt/title attributes without escaping. Keep npm test/lint/package/audit green after every change.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
