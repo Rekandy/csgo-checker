@@ -6,9 +6,9 @@ let JSONdb = require('simple-json-db');
 const axios = require('axios').default;
 const User = require('steam-user');
 const SteamTotp = require('steam-totp');
-const fs = require('fs');
-const path = require('path');
-const { EOL } = require('os');
+const fs = require('node:fs');
+const path = require('node:path');
+const { EOL } = require('node:os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
 const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage, extractCompetitiveMaps } = require('./helpers/gcpd_parser.js');
 const { mergeGcpdMatchmaking, applyGcRanking, applyGcRankUpdateEntry } = require('./helpers/rankMerge.js');
@@ -23,7 +23,16 @@ const { xpIntoLevel, xpModuloLevel } = require('./helpers/xp.js');
 // applyHelloResult so that handler reads as straight-line assignments. Behavior
 // is byte-for-behavior identical; no branch is added, removed, or reordered.
 
-// Community ban wins over penalty_reason, which wins over VAC, else 0.
+// Community ban wins over penalty_reason, which wins over VAC, else the numeric
+// 0 sentinel.
+//
+// The mixed return type (String | 0) that SonarQube flags is load-bearing and
+// intentional, NOT a defect: `0` is the "no penalty" sentinel. It matches the
+// `penalty_reason: 0` default the data object is initialized with, and the
+// renderer's formatPenalty() branches on `reason === 0` (strict) to render '-'.
+// Returning a string '0' here (to make the type uniform) would break that
+// strict comparison and change the rendered ban column, so the number is kept
+// deliberately.
 function resolveHelloPenaltyReason(msg, limitations) {
     if (limitations.communityBanned) return 'Community ban';
     if (msg.penalty_reason > 0) return penalty_reason_string(msg.penalty_reason);
@@ -247,7 +256,7 @@ settings.sync(); //makes empty file on first run
 /**
  * @type {JSONdb}
  */
-var db = null;
+let db = null;
 
 /**
  * Apply defensive navigation guards to a BrowserWindow's webContents. Denies
@@ -362,18 +371,22 @@ function openEncryptedDb(pass) {
  * @returns {string}
  */
 function normalizeDecryptError(error) {
-    if (typeof error != 'string') {
-        if (error.reason == 'BAD_DECRYPT') {
-            return 'Invalid password';
-        }
-        else if (error.code) {
-            return error.code;
-        }
-        else {
-            return error.toString();
-        }
+    if (typeof error === 'string') {
+        return error;
     }
-    return error;
+    if (error.reason == 'BAD_DECRYPT') {
+        return 'Invalid password';
+    }
+    if (error.code) {
+        return error.code;
+    }
+    // A plain Error (e.g. the empty-password guard) carries its human-readable
+    // text in .message; use that so the dialog shows exactly that string rather
+    // than the "Error: ..." prefix that error.toString() would add.
+    if (error instanceof Error && error.message) {
+        return error.message;
+    }
+    return error.toString();
 }
 
 async function openDB() {
@@ -388,7 +401,7 @@ async function openDB() {
                 let pass = await promptForPassword(error_message);
                 try {
                     if (pass == null || pass.length === 0) {
-                        throw 'Password can not be empty';
+                        throw new Error('Password can not be empty');
                     }
                     db = await openEncryptedDb(pass);
                     //we decrypted successfully, exit loop
@@ -427,9 +440,9 @@ if (typeof settings.get('encrypted') != 'boolean') {
 let updated = settings.get('version') != app.getVersion();
 settings.set('version', app.getVersion());
 
-var currently_checking = [];
+let currently_checking = [];
 
-var mainWindowCreated = false;
+let mainWindowCreated = false;
 
 /**
  * Remove a username from the currently_checking list. Centralised so every
@@ -623,7 +636,7 @@ ipcMain.handle('encryption:remove', async () => {
         }
         try {
             if (pass.length == 0) {
-                throw 'Password can not be empty';
+                throw new Error('Password can not be empty');
             }
             //attempt to decrypt using this password
             let temp_db = await new Promise((res, rej) => {
@@ -647,18 +660,7 @@ ipcMain.handle('encryption:remove', async () => {
             return false; //false is success as in non encrypted
         } catch (error) {
             logger.error('Failed to disable encryption', { op: 'decrypt', error });
-            if (typeof error != 'string') {
-                if (error.reason == 'BAD_DECRYPT') {
-                    error = 'Invalid password';
-                }
-                else if (error.code) {
-                    error = error.code;
-                }
-                else {
-                    error = error.toString();
-                }
-            }
-            error_message = error;
+            error_message = normalizeDecryptError(error);
         }
     }
 });
@@ -668,9 +670,9 @@ ipcMain.handle('app:version', app.getVersion);
 ipcMain.handle('accounts:get', () => {
     let data = db.JSON();
     for (const username in data) {
-        if (Object.hasOwnProperty.call(data, username)) {
+        if (Object.hasOwn(data, username)) {
             const account = data[username];
-            if(currently_checking.indexOf(username) != -1){
+            if(currently_checking.includes(username)){
                 account.pending = true;
             }
         }
@@ -759,7 +761,7 @@ function checkErrorMessage(error) {
 function saveAccountCheckSuccess(username, account, res) {
     const current = db.get(username) || account;
     for (const key in res) {
-        if (Object.hasOwnProperty.call(res, key)) {
+        if (Object.hasOwn(res, key)) {
             current[key] = res[key];
         }
     }
@@ -1048,52 +1050,62 @@ function check_account(username, pass, sharedSecret) {
             }
         });
 
-        steamClient.on('steamGuard', (domain, callback) => {
-            // Prefer the shared-secret TOTP path whenever a shared secret exists
-            // (works for both mobile-authenticator and, when Steam reports no
-            // email domain, app-based Steam Guard).
-            if (sharedSecret && sharedSecret.length > 0) {
-                if (steamTimeOffset == null) {
-                    SteamTotp.getTimeOffset((err, offset) => {
-                        if (err) {
-                            clearCurrentlyChecking(username);
-                            reject(new Error('unable to get steam time offset'));
-                            return;
-                        }
-                        steamTimeOffset = offset;
-                        callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
-                    });
+        // Reject the current check as a (non-retryable) missing-Steam-Guard
+        // failure. Centralised so every steam-guard bail-out is identical.
+        function rejectSteamGuardMissing() {
+            clearCurrentlyChecking(username);
+            const err = new Error('steam guard missing');
+            err.eresult = 63; // steam_guard_required (non-retryable)
+            reject(err);
+        }
+
+        // Answer a Steam Guard challenge using the stored shared secret (TOTP).
+        // Works for mobile-authenticator and app-based Steam Guard. Refreshes
+        // the cached time offset first when it is not yet known.
+        function answerSteamGuardWithSharedSecret(callback) {
+            if (steamTimeOffset != null) {
+                callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
+                return;
+            }
+            SteamTotp.getTimeOffset((err, offset) => {
+                if (err) {
+                    clearCurrentlyChecking(username);
+                    reject(new Error('unable to get steam time offset'));
                     return;
                 }
+                steamTimeOffset = offset;
                 callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
-            } else if (!win) {
-                clearCurrentlyChecking(username);
-                const err = new Error('steam guard missing');
-                err.eresult = 63; // classify as steam_guard_required (non-retryable)
-                reject(err);
+            });
+        }
+
+        // Prompt the renderer for a Steam Guard code, scoping the response to
+        // THIS username so concurrent prompts never cross accounts.
+        function answerSteamGuardViaRenderer(callback) {
+            setAccountStatus(username, STATUS.STEAM_GUARD_REQUIRED);
+            win.webContents.send('steam:steamguard', username);
+            const responseHandler = (event, code, respondedUsername) => {
+                if (respondedUsername != null && respondedUsername !== username) {
+                    return; // not for us - leave the listener in place
+                }
+                removeSteamGuardListener();
+                if (code) {
+                    callback(code);
+                } else {
+                    rejectSteamGuardMissing();
+                }
+            };
+            steamGuardResponseHandler = responseHandler;
+            ipcMain.on('steam:steamguard:response', responseHandler);
+        }
+
+        steamClient.on('steamGuard', (domain, callback) => {
+            // Prefer the shared-secret TOTP path whenever a shared secret exists.
+            if (sharedSecret?.length > 0) {
+                answerSteamGuardWithSharedSecret(callback);
+            } else if (win) {
+                answerSteamGuardViaRenderer(callback);
             } else {
-                setAccountStatus(username, STATUS.STEAM_GUARD_REQUIRED);
-                win.webContents.send('steam:steamguard', username);
-                // Scope the response to THIS username so concurrent Steam Guard
-                // prompts never deliver one account's code to another's login.
-                // The renderer still replies on the shared channel with (code,
-                // username); we ignore responses meant for other accounts.
-                const responseHandler = (event, code, respondedUsername) => {
-                    if (respondedUsername != null && respondedUsername !== username) {
-                        return; // not for us - leave the listener in place
-                    }
-                    removeSteamGuardListener();
-                    if (!code) {
-                        clearCurrentlyChecking(username);
-                        const err = new Error('steam guard missing');
-                        err.eresult = 63; // steam_guard_required (non-retryable)
-                        reject(err);
-                    } else {
-                        callback(code);
-                    }
-                };
-                steamGuardResponseHandler = responseHandler;
-                ipcMain.on('steam:steamguard:response', responseHandler);
+                rejectSteamGuardMissing();
             }
         });
 
@@ -1299,11 +1311,10 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
                     ? CMsgClientWelcome.outofdate_subscribed_caches
                     : [];
-                for (let i = 0; i < outofdateCaches.length; i++) {
-                    const outofdate_cache = outofdateCaches[i];
+                for (const outofdate_cache of outofdateCaches) {
                     const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
-                    for (let j = 0; j < cacheObjects.length; j++) {
-                        processClientWelcomeCacheObject(cacheObjects[j], data, username, steamClient, appid, () => Done, sleep);
+                    for (const cacheObject of cacheObjects) {
+                        processClientWelcomeCacheObject(cacheObject, data, username, steamClient, appid, () => Done, sleep);
                     }
                 }
             };
@@ -1412,8 +1423,8 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
             // that an earlier handler established.
             const applyProfileRankings = (profile) => {
                 if (Array.isArray(profile.rankings) && profile.rankings.length > 0) {
-                    for (let r = 0; r < profile.rankings.length; r++) {
-                        applyGcRanking(data, profile.rankings[r]);
+                    for (const ranking of profile.rankings) {
+                        applyGcRanking(data, ranking);
                     }
                     logger.debug('PlayersProfile ranks resolved', {
                         account: username,
@@ -1434,8 +1445,7 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 }
                 let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
                 if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
-                    for (let p = 0; p < profileMsg.account_profiles.length; p++) {
-                        const profile = profileMsg.account_profiles[p];
+                    for (const profile of profileMsg.account_profiles) {
                         applyProfileLevelAndXp(profile);
                         applyProfileRankings(profile);
                     }

@@ -1,9 +1,9 @@
 let JSONdb = require('simple-json-db');
-let crypto = require('crypto');
+let crypto = require('node:crypto');
 const { pbkdf2: deriveKey } = require("pbkdf2");
-const events = require('events');
-const util = require('util');
-const fs = require("fs");
+const events = require('node:events');
+const util = require('node:util');
+const fs = require("node:fs");
 
 const DERIVATION_ROUNDS = 200000;
 const HMAC_KEY_SIZE = 32;
@@ -41,7 +41,7 @@ async function deriveFromPassword(password, salt, rounds) {
   const bits = (PASSWORD_KEY_SIZE + HMAC_KEY_SIZE) * 8;
   const derivedKeyData = await pbkdf2(password, salt, rounds, bits);
   const derivedKeyHex = derivedKeyData.toString("hex");
-  return Buffer.from(derivedKeyHex.substr(0, derivedKeyHex.length / 2), "hex");
+  return Buffer.from(derivedKeyHex.slice(0, derivedKeyHex.length / 2), "hex");
 }
 
 function generateSalt(length) {
@@ -52,7 +52,7 @@ function generateSalt(length) {
   while (output.length < length) {
     output += crypto.randomBytes(3).toString("base64");
     if (output.length > length) {
-      output = output.substr(0, length);
+      output = output.slice(0, length);
     }
   }
   return output;
@@ -109,7 +109,7 @@ class EncryptedStorage {
       throw new Error('Missing file path argument.');
     }
     this.filePath = filePath;
-    this.options = Object.assign({}, defaultOptions, options);
+    this.options = { ...defaultOptions, ...options };
     this.storage = {};
 
     if (this.options.newData) {
@@ -169,7 +169,7 @@ class EncryptedStorage {
     deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
       try {
         this.derivedKey = derivedKey;
-        if (opts && opts.sync) this.sync();
+        if (opts?.sync) this.sync();
         this.emit('loaded');
       } catch (error) {
         this.emit('error', error);
@@ -241,6 +241,20 @@ class EncryptedStorage {
   sync() {
     const json = JSON.stringify(this.storage, null, this.options.jsonSpaces);
 
+    // SECURITY / SonarQube "use a secure mode and padding scheme" (AES-CBC):
+    // ACCEPTED RISK, deliberately kept as aes-256-cbc. This is local-only,
+    // at-rest encryption of the user's OWN account database on their OWN disk.
+    // The key is derived (pbkdf2-sha256, 200000 rounds) from a password only the
+    // user knows; there is no network, no untrusted party, and no
+    // chosen-ciphertext / tampering threat model for a self-owned local JSON
+    // file. Switching to an authenticated mode (AES-GCM) would change the
+    // on-disk envelope (a GCM auth tag is required) and therefore BRICK every
+    // existing user database written under the current {iv,salt,data} CBC format
+    // - a far worse outcome than the theoretical weakness the scanner flags.
+    // Backward-compatibility of already-encrypted user data outranks silencing
+    // this finding. See test/storage.js: the hard-coded CBC fixtures
+    // (password 'fixture-password-v1') and the on-disk-format test pin this
+    // envelope and must keep passing.
     const encryptTool = crypto.createCipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
   
     let encryptedData = encryptTool.update(json, "utf8", "base64");
@@ -257,7 +271,7 @@ class EncryptedStorage {
     // mid-write can never leave the database in a partially-written state.
     const tmpPath = this.filePath + '.tmp';
 
-    if (this.options && this.options.asyncWrite) {
+    if (this.options?.asyncWrite) {
       fs.writeFile(tmpPath, finalJson, (err) => {
         if (err) throw err;
         try {

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset='utf-8'>
   <meta http-equiv='X-UA-Compatible' content='IE=edge'>
@@ -29,7 +29,7 @@
       <ul class="navbar-nav me-auto">
       </ul>
       <div class="col-4 mb-0 me-3">
-        <input type="search" class="form-control form-control-dark" id="search" placeholder="Search...">
+        <input type="search" class="form-control form-control-dark" id="search" placeholder="Search..." aria-label="Search accounts">
       </div>
 
       <div class="text-end">
@@ -127,6 +127,13 @@
     <tr>
       <td class="login"></td>
       <td class="preloader" colspan="10">
+        <!--
+          Kept as an ARIA progressbar (role="progressbar") rather than a native
+          <progress>: this is a decorative indeterminate loading indicator that
+          relies on Bootstrap's striped/animated fill, which a native
+          <progress> cannot render identically. It is accessibility-equivalent
+          via role and is not runtime-verifiable in this sandbox (no display).
+        -->
         <div class="progress">
           <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 100%"></div>
         </div>
@@ -144,6 +151,18 @@
               </div>
               <span class="exp-text"><span class="exp-value">4901</span>/5000</span>
             </div>
+            <!--
+              Kept as an ARIA progressbar (role="progressbar" with
+              aria-valuenow/min/max) rather than a native <progress>: front.js
+              (renderRowLevel) drives this bar by setting style.width as a
+              percentage and updating aria-valuenow on the `.level .progress-bar`
+              element. It also depends on Bootstrap's bg-info fill inside the
+              3px-tall container, which a native <progress> cannot express
+              identically. Converting would require rewriting the untestable
+              renderer (no display in this sandbox) with no way to verify the
+              XP progress UI still updates, so it is kept behavior-preserving
+              and accessibility-equivalent.
+            -->
             <div class="progress mt-1" style="height: 3px; width: 100%;">
               <div class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="5000"></div>
             </div>
@@ -213,10 +232,10 @@
   <template id="settings-tags-template">
     <div class="row">
       <div class="col-4 pe-0">
-        <input type="text" readonly class="form-control-plaintext">
+        <input type="text" readonly class="form-control-plaintext" aria-label="Tag name">
       </div>
       <div class="col d-flex">
-        <input type="color" class="form-control form-control-color">
+        <input type="color" class="form-control form-control-color" aria-label="Tag color">
         <button type="button" class="btn">
           <i class="material-icons">delete</i>
         </button>
@@ -252,7 +271,7 @@
     <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title"></h5>
+          <h5 class="modal-title">Edit account</h5>
         </div>
         <div class="modal-body">
           <form>
@@ -324,7 +343,7 @@
           </form>
           <form class="row mt-4">
             <div class="col-4 pe-0">
-              <input type="text" class="form-control" id="new-tag" placeholder="new tag name">
+              <input type="text" class="form-control" id="new-tag" placeholder="new tag name" aria-label="New tag name">
             </div>
             <div class="col">
               <button type="button" class="btn btn-primary" id="new-tag-btn">add new</button>

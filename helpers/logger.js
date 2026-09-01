@@ -34,7 +34,7 @@ const REDACTED = '[REDACTED]';
  */
 function resolveLevel() {
     const fromEnv = (process.env.LOG_LEVEL || '').trim().toUpperCase();
-    if (Object.prototype.hasOwnProperty.call(LEVELS, fromEnv)) {
+    if (Object.hasOwn(LEVELS, fromEnv)) {
         return fromEnv;
     }
     let isDev = false;
@@ -55,7 +55,7 @@ let currentLevel = resolveLevel();
  */
 function setLevel(level) {
     const normalized = (level || '').trim().toUpperCase();
-    if (Object.prototype.hasOwnProperty.call(LEVELS, normalized)) {
+    if (Object.hasOwn(LEVELS, normalized)) {
         currentLevel = normalized;
     }
 }
@@ -95,29 +95,50 @@ function redact(value, seen = new WeakSet()) {
     if (Array.isArray(value)) {
         return value.map((item) => redact(item, seen));
     }
-
-    // Errors: preserve the message/stack (scrubbed) without losing them to a
-    // plain object copy that would drop non-enumerable props.
     if (value instanceof Error) {
-        const copy = { name: value.name, message: redactString(String(value.message)) };
-        if (value.stack) {
-            copy.stack = redactString(String(value.stack));
-        }
-        for (const key of Object.keys(value)) {
-            copy[key] = SECRET_KEY_RE.test(key) ? REDACTED : redact(value[key], seen);
-        }
-        return copy;
+        return redactError(value, seen);
     }
+    return redactObject(value, seen);
+}
 
-    const out = {};
-    for (const key of Object.keys(value)) {
-        if (SECRET_KEY_RE.test(key)) {
-            out[key] = REDACTED;
-        } else {
-            out[key] = redact(value[key], seen);
-        }
+/**
+ * Redact an Error while preserving message/stack (scrubbed) and any own props,
+ * which a plain object copy would otherwise drop.
+ * @param {Error} value
+ * @param {WeakSet} seen cycle guard
+ * @returns {object}
+ */
+function redactError(value, seen) {
+    const copy = { name: value.name, message: redactString(String(value.message)) };
+    if (value.stack) {
+        copy.stack = redactString(String(value.stack));
     }
-    return out;
+    return assignRedactedKeys(copy, value, seen);
+}
+
+/**
+ * Redact a plain object's own enumerable keys into a fresh object.
+ * @param {object} value
+ * @param {WeakSet} seen cycle guard
+ * @returns {object}
+ */
+function redactObject(value, seen) {
+    return assignRedactedKeys({}, value, seen);
+}
+
+/**
+ * Copy each own key of `source` into `target`, masking secret keys and
+ * recursively redacting the rest.
+ * @param {object} target
+ * @param {object} source
+ * @param {WeakSet} seen cycle guard
+ * @returns {object} target
+ */
+function assignRedactedKeys(target, source, seen) {
+    for (const key of Object.keys(source)) {
+        target[key] = SECRET_KEY_RE.test(key) ? REDACTED : redact(source[key], seen);
+    }
+    return target;
 }
 
 /**

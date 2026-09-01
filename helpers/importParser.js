@@ -32,7 +32,7 @@ function parseAccountLines(text) {
     }
 
     // Strip a leading UTF-8 BOM if present.
-    if (text.charCodeAt(0) === 0xfeff) {
+    if (text.codePointAt(0) === 0xfeff) {
         text = text.slice(1);
     }
 
@@ -43,7 +43,11 @@ function parseAccountLines(text) {
     // Split on LF; strip any trailing CR so CRLF and LF both work.
     const lines = text.split('\n');
     for (let raw of lines) {
-        const line = raw.replace(/\r+$/, '').trim();
+        // Strip a single trailing CR (CRLF split leaves one). Any additional
+        // trailing CRs are whitespace and get removed by the .trim() below, so a
+        // non-backtracking single-char anchor is sufficient (and avoids the
+        // super-linear `\r+$` quantifier).
+        const line = raw.replace(/\r$/, '').trim();
         if (line.length === 0) {
             // Blank or whitespace-only line: not an error, just skip silently.
             continue;

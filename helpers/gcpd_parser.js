@@ -21,8 +21,7 @@ function stripTags(str) {
   // Remove HTML tags
   let out = '';
   let inTag = false;
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
+  for (const c of str) {
     if (c === '<') { inTag = true; continue; }
     if (c === '>') { inTag = false; continue; }
     if (!inTag) {
@@ -32,12 +31,12 @@ function stripTags(str) {
   }
   // Decode common HTML entities
   out = out
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&nbsp;', ' ');
   return out.trim();
 }
 
@@ -50,7 +49,7 @@ function stripTags(str) {
 function containsCI(hay, needle) {
   if (!needle) return true;
   if (!hay) return false;
-  return hay.toLowerCase().indexOf(needle.toLowerCase()) !== -1;
+  return hay.toLowerCase().includes(needle.toLowerCase());
 }
 
 /**
@@ -63,8 +62,8 @@ function toInt(s, dflt) {
   if (dflt === undefined) dflt = -1;
   if (!s) return dflt;
   const cleaned = s.replace(/[, ]/g, '');
-  const v = parseInt(cleaned, 10);
-  return isNaN(v) ? dflt : v;
+  const v = Number.parseInt(cleaned, 10);
+  return Number.isNaN(v) ? dflt : v;
 }
 
 /**
@@ -75,13 +74,13 @@ function toInt(s, dflt) {
 function parseGcpdTimestamp(s) {
   if (!s || !s.trim()) return 0;
   // Expected format: YYYY-MM-DD HH:MM:SS (may have trailing " GMT" or similar)
-  const match = s.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+  const match = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/.exec(s);
   if (!match) return 0;
   const [, y, mo, d, h, mi, se] = match;
   // Parse as UTC
   const dateStr = `${y}-${mo}-${d}T${h}:${mi}:${se}Z`;
   const ts = Date.parse(dateStr);
-  if (isNaN(ts)) return 0;
+  if (Number.isNaN(ts)) return 0;
   return Math.floor(ts / 1000);
 }
 
@@ -135,9 +134,9 @@ function extractTables(html) {
 function headerContainsAnyCell(table, needles) {
   if (!table || table.length === 0) return false;
   const header = table[0];
-  for (let i = 0; i < header.length; i++) {
-    for (let j = 0; j < needles.length; j++) {
-      if (containsCI(header[i], needles[j])) return true;
+  for (const cell of header) {
+    for (const needle of needles) {
+      if (containsCI(cell, needle)) return true;
     }
   }
   return false;
@@ -161,8 +160,8 @@ const KEYWORDS_MAP = ['Map', 'Mappa', 'Mapa', 'Carte', 'Karte', 'Карта'];
 function findColumn(header, needles) {
   if (!header) return -1;
   for (let c = 0; c < header.length; c++) {
-    for (let j = 0; j < needles.length; j++) {
-      if (containsCI(header[c], needles[j])) return c;
+    for (const needle of needles) {
+      if (containsCI(header[c], needle)) return c;
     }
   }
   return -1;
@@ -338,6 +337,9 @@ function parseMatchmaking(html) {
   try {
     tables = extractTables(html);
   } catch (e) {
+    // Resilient parsing: malformed/unexpected HTML must never throw. Return the
+    // zero-initialized result so the caller treats this page as "nothing found"
+    // rather than crashing the check.
     return result;
   }
   if (tables.length === 0) return result;
@@ -345,10 +347,12 @@ function parseMatchmaking(html) {
 
   try {
     const nowSeconds = Math.floor(Date.now() / 1000);
-    for (let t = 0; t < tables.length; t++) {
-      processSingleTable(tables[t], result, nowSeconds);
+    for (const table of tables) {
+      processSingleTable(table, result, nowSeconds);
     }
   } catch (e) {
+    // A single unparseable table must not discard everything already parsed;
+    // return the partially-populated result instead of throwing.
     return result;
   }
 
@@ -379,6 +383,9 @@ function parseAccountMain(html) {
   try {
     tables = extractTables(html);
   } catch (e) {
+    // Resilient parsing: malformed/unexpected HTML must never throw. Return the
+    // zero-initialized result so the caller treats this page as "nothing found"
+    // rather than crashing the check.
     return result;
   }
   if (tables.length === 0) return result;
@@ -388,12 +395,10 @@ function parseAccountMain(html) {
 
   // Concatenate all cell text into a single blob for label searching
   let blob = '';
-  for (let t = 0; t < tables.length; t++) {
-    const tbl = tables[t];
-    for (let r = 0; r < tbl.length; r++) {
-      const row = tbl[r];
-      for (let c = 0; c < row.length; c++) {
-        blob += row[c] + '\n';
+  for (const tbl of tables) {
+    for (const row of tbl) {
+      for (const cell of row) {
+        blob += cell + '\n';
       }
     }
   }
@@ -404,17 +409,17 @@ function parseAccountMain(html) {
    * @returns {number} The extracted integer, or -1 if not found
    */
   function extractIntAfter(labels) {
-    for (let l = 0; l < labels.length; l++) {
-      const needle = labels[l] + ':';
+    for (const label of labels) {
+      const needle = label + ':';
       let pos = blob.indexOf(needle);
       while (pos !== -1) {
         pos += needle.length;
         // Skip whitespace (including newlines in the blob)
         while (pos < blob.length && /\s/.test(blob[pos])) pos++;
         // Try to extract an integer
-        const numMatch = blob.substring(pos).match(/^(\d+)/);
+        const numMatch = /^(\d+)/.exec(blob.substring(pos));
         if (numMatch) {
-          return parseInt(numMatch[1], 10);
+          return Number.parseInt(numMatch[1], 10);
         }
         pos = blob.indexOf(needle, pos);
       }
@@ -509,7 +514,15 @@ function looksLikeErrorPage(html) {
 // <tr>...</tr> to slice whole rows out of the page; the per-row exec matches
 // the same capture groups inside a single sliced row. Keeping one source here
 // guarantees the two stay byte-identical.
-const COMPETITIVE_MAP_ROW_SOURCE = '<td>Ranked Competitive<\\/td>[\\s\\S]*?<td>([^<]+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>([^<]*)<\\/td>[\\s\\S]*?<td>(\\d\\d\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d GMT)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>';
+//
+// NOTE (SonarQube regex-complexity): the seven `[\s\S]*?` gap separators are
+// irreducible - each skips the intervening cells between the seven <td> values
+// we actually capture (map name, wins, ties, losses, skill group, last-match
+// timestamp, region), in order, within one table row. Collapsing or reusing a
+// separator would change which cells are matched and break byte-identical
+// extraction (see test/gcpd_parser.js extractCompetitiveMaps cases), so the
+// complexity is accepted rather than "simplified" into a behavior change.
+const COMPETITIVE_MAP_ROW_SOURCE = String.raw`<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>`;
 
 /**
  * Parse a single sliced competitive-map row into its structured record.
@@ -523,19 +536,19 @@ function parseCompetitiveMapRow(row) {
   if (!m) return null;
   return {
     name: m[1].trim(),
-    wins: parseInt(m[2], 10),
-    ties: parseInt(m[3], 10),
-    losses: parseInt(m[4], 10),
+    wins: Number.parseInt(m[2], 10),
+    ties: Number.parseInt(m[3], 10),
+    losses: Number.parseInt(m[4], 10),
     skill_group: m[5].trim() || null,
     last_match: m[6],
-    region: parseInt(m[7], 10)
+    region: Number.parseInt(m[7], 10)
   };
 }
 
 function extractCompetitiveMaps(html) {
   const mapsData = {};
   if (!html) return mapsData;
-  const mapRows = html.match(new RegExp('<tr>[\\s\\S]*?' + COMPETITIVE_MAP_ROW_SOURCE + '[\\s\\S]*?<\\/tr>', 'g'));
+  const mapRows = html.match(new RegExp(String.raw`<tr>[\s\S]*?` + COMPETITIVE_MAP_ROW_SOURCE + String.raw`[\s\S]*?<\/tr>`, 'g'));
   if (mapRows) {
     mapRows.forEach(function(row) {
       const parsed = parseCompetitiveMapRow(row);

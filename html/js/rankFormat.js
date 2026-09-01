@@ -43,7 +43,12 @@ function findPremierBucket(rank) {
 /**
  * True when a premier rating value represents the unranked/none state (empty
  * cell, null/undefined, or 0).
- * @param {Number} rank
+ *
+ * `rank` can arrive either as a Number or as a numeric/empty string from stored
+ * or table-parsed account data (an empty table cell surfaces as ''), so the
+ * `=== ''` guard is intentional and load-bearing, not dead code. The JSDoc type
+ * reflects both shapes.
+ * @param {Number|string} rank
  * @returns {Boolean}
  */
 function isPremierUnranked(rank) {
@@ -162,7 +167,7 @@ function getRankName(rank, wins, type) {
   }
   // Match the original strict `switch (rank)` semantics: only an exact numeric
   // rank id maps to a name; anything else (incl. numeric strings) is Unknown.
-  return Object.prototype.hasOwnProperty.call(MM_RANK_NAMES, rank) && typeof rank === 'number'
+  return Object.hasOwn(MM_RANK_NAMES, rank) && typeof rank === 'number'
     ? MM_RANK_NAMES[rank]
     : `Unknown(${rank})`;
 }
@@ -199,7 +204,7 @@ const DZ_RANK_NAMES = {
     return wins >= 1 ? "Expired or Unranked" : "Unranked";
   }
   // Match the original strict `switch (rank)` semantics.
-  return Object.prototype.hasOwnProperty.call(DZ_RANK_NAMES, rank) && typeof rank === 'number'
+  return Object.hasOwn(DZ_RANK_NAMES, rank) && typeof rank === 'number'
     ? DZ_RANK_NAMES[rank]
     : `Unknown(${rank})`;
 }
@@ -252,12 +257,12 @@ function formatExpireTime(time) {
   console.log('Original date:', time);
   
   // Проверяем, что дата валидна
-  if (!(time instanceof Date && !isNaN(time))) {
+  if (!(time instanceof Date && !Number.isNaN(time.getTime()))) {
     console.error('Invalid date provided to formatExpireTime');
     return 'Invalid date';
   }
   
-  time = new Date(time.getTime());
+  time = new Date(time);
   console.log('Converted date:', time);
   //https://github.com/dumbasPL/csgo-checker/issues/3#issuecomment-827474759
   //this is untested yet, i'm trusting what this guy says.
@@ -282,9 +287,9 @@ function formatExpireTime(time) {
  */
 function getContrastYIQ(color) {
   color = color.trim().replace('#', '');
-  var r = parseInt(color.substr(0, 2), 16);
-  var g = parseInt(color.substr(2, 2), 16);
-  var b = parseInt(color.substr(4, 2), 16);
-  var yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
+  const r = Number.parseInt(color.substring(0, 2), 16);
+  const g = Number.parseInt(color.substring(2, 4), 16);
+  const b = Number.parseInt(color.substring(4, 6), 16);
+  const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
   return (yiq >= 128) ? 'black' : 'white';
 }

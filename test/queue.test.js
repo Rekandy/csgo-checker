@@ -86,8 +86,20 @@ test('onIdle/drain resolves only after all tasks settle', async () => {
 
 test('onIdle resolves immediately when the queue is empty', async () => {
     const q = new TaskQueue(3);
-    await q.onIdle();
-    assert.ok(true);
+    // An empty queue starts idle; onIdle must resolve (not hang) and must not
+    // schedule any work or perturb the counters. Race against a timer so a
+    // broken onIdle that never resolves fails the test instead of hanging.
+    const timedOut = Symbol('timed-out');
+    let timer;
+    const guard = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(timedOut), 1000);
+    });
+    const result = await Promise.race([q.onIdle().then(() => 'resolved'), guard]);
+    clearTimeout(timer);
+
+    assert.strictEqual(result, 'resolved', 'onIdle must resolve immediately for an empty queue');
+    assert.strictEqual(q.running, 0, 'no tasks should be running after onIdle on an empty queue');
+    assert.strictEqual(q.pending, 0, 'no tasks should be pending after onIdle on an empty queue');
 });
 
 test('concurrency below 1 is clamped to 1', async () => {

@@ -53,8 +53,7 @@ function showToast(text, color, permanent = false) {
       break;
   }
   let toast_div = newToast.querySelector('.toast');
-  toast_div.classList.add('text-' + fg);
-  toast_div.classList.add('bg-' + color);
+  toast_div.classList.add('text-' + fg, 'bg-' + color);
   if (!permanent) {
     toast_div.querySelector('button.btn-close').remove();
   }
@@ -123,10 +122,12 @@ function buildIdentitySearchStrings(login, account) {
   if (account.tags) {
     account.tags.forEach(tag => strings.push(tag));
   }
-  strings.push(account.prime ? "prime" : null);
-  strings.push(account.error ?? null);
-  strings.push(formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1));
-  strings.push(account.steamid ? "" + account.steamid : null);
+  strings.push(
+    account.prime ? "prime" : null,
+    account.error ?? null,
+    formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1),
+    account.steamid ? "" + account.steamid : null
+  );
   return strings;
 }
 
@@ -155,7 +156,7 @@ function execSearch(q, login, account) {
   let strings = buildSearchStrings(login, account);
 
   return q.toLowerCase().split(' ').map(x => {
-    return strings.find(v => v && v.toLowerCase().includes(x)) != undefined
+    return strings.some(v => v?.toLowerCase().includes(x))
   }).reduce((prev, cur) => prev && cur, true);
 }
 
@@ -193,6 +194,25 @@ const SORT_COLUMN_TRANSFORMS = {
 };
 
 /**
+ * Compare two cell values for sorting.
+ *
+ * Numeric columns (rank/lvl/prime, normalized by SORT_COLUMN_TRANSFORMS) still
+ * sort numerically. String columns use localeCompare for a reliable,
+ * locale-aware alphabetical order instead of the byte-wise `>` operator that
+ * SonarQube flags as unreliable. The ascending order this produces is later
+ * reversed for DESC by the caller, matching the previous behavior.
+ * @param {*} a
+ * @param {*} b
+ * @returns {Number} negative if a<b, positive if a>b, 0 if equal
+ */
+function compareSortValues(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b;
+  }
+  return String(a).localeCompare(String(b));
+}
+
+/**
  * Compute the ordered list of account logins for the given column and sort
  * direction, applying any per-column value transform first.
  * @param {String} col_name column data name
@@ -216,17 +236,13 @@ function computeSortOrder(col_name, new_sort_dir) {
   const transform = SORT_COLUMN_TRANSFORMS[col_name];
   if (transform) {
     accounts = accounts.map(a => {
-      let clone = Object.assign({}, a[1]);
+      const clone = { ...a[1] };
       transform(clone, col_name);
       return [a[0], clone];
     });
   }
   if (new_sort_dir != 'none') {
-    accounts.sort((a, b) => {
-      a = a[1];
-      b = b[1];
-      return a[col_name] > b[col_name] ? 1 : -1;
-    });
+    accounts.sort((a, b) => compareSortValues(a[1][col_name], b[1][col_name]));
   }
   if (new_sort_dir == 'DESC') {
     accounts.reverse();
@@ -591,6 +607,10 @@ async function updateAccounts(force = false) {
           showToast('SteamGuard Code copied to clipboard', 'success');
         }
         catch (e) {
+          // The failure (bad/absent shared secret, IPC error) is surfaced to
+          // the user as a toast, which is the meaningful handling here; there is
+          // no redacting logger in the renderer, so we intentionally do not log
+          // the raw error object (it can reference secret-bearing data).
           showToast('An error occured when getting steam guard code', 'danger')
         }
       });
@@ -643,6 +663,12 @@ async function updateAccounts(force = false) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Intentional side-effect instantiation: constructing a bootstrap.Tooltip
+  // registers the hover-triggered tooltip on the element and stores the instance
+  // internally on Bootstrap's side (retrievable later via
+  // bootstrap.Tooltip.getInstance, as done in renderRowRanks). We do not need
+  // the returned reference here, so it is deliberately not assigned - removing
+  // the `new` would disable tooltips for the static markup.
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
     new bootstrap.Tooltip(el, { trigger: 'hover' });
   });
@@ -973,7 +999,7 @@ document.addEventListener('DOMContentLoaded', () => {
       mapsTableBody.innerHTML = '';
       
       // Если у аккаунта есть данные о картах, отображаем их
-      if (account && account.maps) {
+      if (account?.maps) {
         // Сортируем карты по количеству побед (по убыванию)
         const sortedMaps = Object.entries(account.maps).sort((a, b) => b[1].wins - a[1].wins);
         
@@ -991,9 +1017,9 @@ document.addEventListener('DOMContentLoaded', () => {
           // Преобразуем название группы навыков в номер ранга
           let rank = 0;
           if (mapData.skill_group) {
-            const rankMatch = mapData.skill_group.match(/\d+/);
+            const rankMatch = /\d+/.exec(mapData.skill_group);
             if (rankMatch) {
-              rank = parseInt(rankMatch[0]);
+              rank = Number.parseInt(rankMatch[0], 10);
             }
           }
           
