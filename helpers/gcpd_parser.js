@@ -32,12 +32,12 @@ function stripTags(str) {
   }
   // Decode common HTML entities
   out = out
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&nbsp;', ' ');
   return out.trim();
 }
 
@@ -50,7 +50,7 @@ function stripTags(str) {
 function containsCI(hay, needle) {
   if (!needle) return true;
   if (!hay) return false;
-  return hay.toLowerCase().indexOf(needle.toLowerCase()) !== -1;
+  return hay.toLowerCase().includes(needle.toLowerCase());
 }
 
 /**
@@ -75,7 +75,7 @@ function toInt(s, dflt) {
 function parseGcpdTimestamp(s) {
   if (!s || !s.trim()) return 0;
   // Expected format: YYYY-MM-DD HH:MM:SS (may have trailing " GMT" or similar)
-  const match = s.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+  const match = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/.exec(s);
   if (!match) return 0;
   const [, y, mo, d, h, mi, se] = match;
   // Parse as UTC
@@ -420,7 +420,7 @@ function parseAccountMain(html) {
         // Skip whitespace (including newlines in the blob)
         while (pos < blob.length && /\s/.test(blob[pos])) pos++;
         // Try to extract an integer
-        const numMatch = blob.substring(pos).match(/^(\d+)/);
+        const numMatch = /^(\d+)/.exec(blob.substring(pos));
         if (numMatch) {
           return Number.parseInt(numMatch[1], 10);
         }
@@ -525,7 +525,7 @@ function looksLikeErrorPage(html) {
 // separator would change which cells are matched and break byte-identical
 // extraction (see test/gcpd_parser.js extractCompetitiveMaps cases), so the
 // complexity is accepted rather than "simplified" into a behavior change.
-const COMPETITIVE_MAP_ROW_SOURCE = '<td>Ranked Competitive<\\/td>[\\s\\S]*?<td>([^<]+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>([^<]*)<\\/td>[\\s\\S]*?<td>(\\d\\d\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d GMT)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>';
+const COMPETITIVE_MAP_ROW_SOURCE = String.raw`<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>`;
 
 /**
  * Parse a single sliced competitive-map row into its structured record.
@@ -551,7 +551,7 @@ function parseCompetitiveMapRow(row) {
 function extractCompetitiveMaps(html) {
   const mapsData = {};
   if (!html) return mapsData;
-  const mapRows = html.match(new RegExp('<tr>[\\s\\S]*?' + COMPETITIVE_MAP_ROW_SOURCE + '[\\s\\S]*?<\\/tr>', 'g'));
+  const mapRows = html.match(new RegExp(String.raw`<tr>[\s\S]*?` + COMPETITIVE_MAP_ROW_SOURCE + String.raw`[\s\S]*?<\/tr>`, 'g'));
   if (mapRows) {
     mapRows.forEach(function(row) {
       const parsed = parseCompetitiveMapRow(row);
