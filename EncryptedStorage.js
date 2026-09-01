@@ -1,9 +1,9 @@
 let JSONdb = require('simple-json-db');
-let crypto = require('crypto');
+let crypto = require('node:crypto');
 const { pbkdf2: deriveKey } = require("pbkdf2");
-const events = require('events');
-const util = require('util');
-const fs = require("fs");
+const events = require('node:events');
+const util = require('node:util');
+const fs = require("node:fs");
 
 const DERIVATION_ROUNDS = 200000;
 const HMAC_KEY_SIZE = 32;
