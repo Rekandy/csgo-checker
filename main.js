@@ -256,7 +256,7 @@ settings.sync(); //makes empty file on first run
 /**
  * @type {JSONdb}
  */
-var db = null;
+let db = null;
 
 /**
  * Apply defensive navigation guards to a BrowserWindow's webContents. Denies
@@ -440,9 +440,9 @@ if (typeof settings.get('encrypted') != 'boolean') {
 let updated = settings.get('version') != app.getVersion();
 settings.set('version', app.getVersion());
 
-var currently_checking = [];
+let currently_checking = [];
 
-var mainWindowCreated = false;
+let mainWindowCreated = false;
 
 /**
  * Remove a username from the currently_checking list. Centralised so every
