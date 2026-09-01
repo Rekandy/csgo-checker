@@ -10,13 +10,23 @@ const Module = require('node:module');
  * exposures can be captured and their forwarding behaviour asserted without a
  * live Electron runtime.
  *
+ * Accepts an optional `clipboardWriteText` implementation so a test can inject
+ * a custom clipboard.writeText (e.g. one that rejects) while reusing the same
+ * Module._load interception scaffolding. When omitted, the default mirrors
+ * Electron 44's Promise-returning writeText and records its args.
+ *
  * Returns the map of exposed API objects keyed by their world name, plus the
  * list of calls made to the underlying ipcRenderer.send.
  */
-function loadPreloadWithMocks() {
+function loadPreloadWithMocks({ clipboardWriteText } = {}) {
     const exposed = {};
     const sendCalls = [];
     const clipboardCalls = [];
+
+    // Electron 44's clipboard.writeText returns a Promise; the default mock
+    // mirrors that so the bridge's .catch() guard is exercised on the resolved
+    // path. Tests may inject their own implementation (e.g. a rejecting one).
+    const defaultWriteText = (...args) => { clipboardCalls.push(args); return Promise.resolve(); };
 
     const mockElectron = {
         contextBridge: {
@@ -27,9 +37,7 @@ function loadPreloadWithMocks() {
             on: () => {},
             invoke: () => Promise.resolve()
         },
-        // Electron 44's clipboard.writeText returns a Promise; the mock mirrors
-        // that so the bridge's .catch() guard is exercised on the resolved path.
-        clipboard: { writeText: (...args) => { clipboardCalls.push(args); return Promise.resolve(); } },
+        clipboard: { writeText: clipboardWriteText || defaultWriteText },
         shell: { openExternal: () => {} }
     };
 
@@ -93,34 +101,14 @@ test('preload clipboard bridge forwards only the text arg (no removed Electron 4
 });
 
 test('preload clipboard bridge swallows a rejected write (no unhandled rejection under Electron 44)', async () => {
-    const exposed = {};
     const originalConsoleError = console.error;
     const consoleErrorCalls = [];
     console.error = (...args) => { consoleErrorCalls.push(args); };
 
     const rejection = new Error('clipboard unavailable');
-    const mockElectron = {
-        contextBridge: {
-            exposeInMainWorld: (name, api) => { exposed[name] = api; }
-        },
-        ipcRenderer: { send: () => {}, on: () => {}, invoke: () => Promise.resolve() },
-        // Simulate a platform clipboard write that rejects under Electron 44.
-        clipboard: { writeText: () => Promise.reject(rejection) },
-        shell: { openExternal: () => {} }
-    };
-
-    const originalLoad = Module._load;
-    Module._load = function (request, parent, isMain) {
-        if (request === 'electron') return mockElectron;
-        return originalLoad.call(this, request, parent, isMain);
-    };
-    try {
-        const preloadPath = path.join(__dirname, '..', 'preload.js');
-        delete require.cache[require.resolve(preloadPath)];
-        require(preloadPath);
-    } finally {
-        Module._load = originalLoad;
-    }
+    // Inject a platform clipboard write that rejects under Electron 44, reusing
+    // the shared Module._load scaffolding rather than duplicating it.
+    const { exposed } = loadPreloadWithMocks({ clipboardWriteText: () => Promise.reject(rejection) });
 
     try {
         // The bridge attaches its own .catch(); the returned Promise still

@@ -309,6 +309,23 @@ function beforeWindowInputHandler(window, event, input) {
 }
 
 /**
+ * Apply the wiring shared by every prompt window: strip the menu, install the
+ * navigation guards, forward keyboard shortcuts through beforeWindowInputHandler,
+ * and log renderer crashes. Behavior is identical to the inline wiring it
+ * replaces; only listener registrations and the menu removal are centralised so
+ * the block is not repeated at each prompt-window creation site.
+ * @param {Electron.BrowserWindow} promptWindow
+ */
+function wirePromptWindowCommon(promptWindow) {
+    promptWindow.removeMenu();
+    applyNavigationGuards(promptWindow.webContents);
+    promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
+    promptWindow.webContents.on('render-process-gone', (event, detailed) => {
+      console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
+    });
+}
+
+/**
  * Show the password prompt window and resolve with the entered password.
  * Preserves the original behavior: quits the app if the window is closed
  * without a response, and passes the last error message to the dialog.
@@ -325,12 +342,10 @@ function promptForPassword(error_message) {
             resizable: false,
             show: false
         });
-        promptWindow.removeMenu();
-        applyNavigationGuards(promptWindow.webContents);
+        wirePromptWindowCommon(promptWindow);
         promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
             promptWindow.webContents.send('password_dialog:init', error_message);
         })
-        promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
         promptWindow.once('ready-to-show', () => promptWindow.show())
         promptWindow.on('closed', () => {
             if (passwordPromptResponse == null) {
@@ -339,9 +354,6 @@ function promptForPassword(error_message) {
             resolve(passwordPromptResponse);
             promptWindow = null;
         })
-        promptWindow.webContents.on('render-process-gone', (event, detailed) => {
-          console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
-        });
     });
 }
 
@@ -481,10 +493,8 @@ function createWindow () {
         minWidth: 1100,
         minHeight: 625
     });
-    win.removeMenu();
-    applyNavigationGuards(win.webContents);
+    wirePromptWindowCommon(win);
     win.loadFile(__dirname + '/html/index.html');
-    win.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(win, event, input));
     win.webContents.once('did-finish-load', () => {
         // disable automatic downloads in portable mode
         autoUpdater.autoDownload = !IS_PORTABLE && !isDev;
@@ -505,9 +515,6 @@ function createWindow () {
         else {
             autoUpdater.checkForUpdates();
         }
-    });
-    win.webContents.on('render-process-gone', (event, detailed) => {
-      console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
     });
 
     mainWindowCreated = true;
@@ -547,10 +554,8 @@ ipcMain.handle('encryption:setup', async () => {
             resizable: false,
             show: false
         });
-        promptWindow.removeMenu();
-        applyNavigationGuards(promptWindow.webContents);
+        wirePromptWindowCommon(promptWindow);
         promptWindow.loadFile(__dirname + '/html/encryption_setup.html');
-        promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
         promptWindow.once('ready-to-show', () => promptWindow.show())
         promptWindow.on('closed', () => {
             if (passwordPromptResponse == null) {
@@ -559,9 +564,6 @@ ipcMain.handle('encryption:setup', async () => {
             resolve(passwordPromptResponse);
             promptWindow = null;
         })
-        promptWindow.webContents.on('render-process-gone', (event, detailed) => {
-          console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
-        });
     });
     if (pass == null) { //no data submitted
         return false;
@@ -613,12 +615,10 @@ ipcMain.handle('encryption:remove', async () => {
                 resizable: false,
                 show: false
             });
-            promptWindow.removeMenu();
-            applyNavigationGuards(promptWindow.webContents);
+            wirePromptWindowCommon(promptWindow);
             promptWindow.loadFile(__dirname + '/html/password.html').then(() => {
                 promptWindow.webContents.send('password_dialog:init', error_message, 'Remove encryption');
             })
-            promptWindow.webContents.on('before-input-event', (event, input) => beforeWindowInputHandler(promptWindow, event, input));
             promptWindow.once('ready-to-show', () => promptWindow.show())
             promptWindow.on('closed', () => {
                 if (passwordPromptResponse == null) {
@@ -627,9 +627,6 @@ ipcMain.handle('encryption:remove', async () => {
                 resolve(passwordPromptResponse);
                 promptWindow = null;
             })
-            promptWindow.webContents.on('render-process-gone', (event, detailed) => {
-              console.error("render crashed, reason: " + detailed.reason + ", exitCode = " + detailed.exitCode)
-            });
         });
         if (pass == null) { //no data submitted
             return true; //true is fail as we are still encrypted
