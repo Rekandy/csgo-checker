@@ -27,7 +27,9 @@ function loadPreloadWithMocks() {
             on: () => {},
             invoke: () => Promise.resolve()
         },
-        clipboard: { writeText: (...args) => { clipboardCalls.push(args); } },
+        // Electron 44's clipboard.writeText returns a Promise; the mock mirrors
+        // that so the bridge's .catch() guard is exercised on the resolved path.
+        clipboard: { writeText: (...args) => { clipboardCalls.push(args); return Promise.resolve(); } },
         shell: { openExternal: () => {} }
     };
 
@@ -88,4 +90,50 @@ test('preload clipboard bridge forwards only the text arg (no removed Electron 4
 
     assert.strictEqual(clipboardCalls.length, 1);
     assert.deepStrictEqual(clipboardCalls[0], ['ABCD-1234']);
+});
+
+test('preload clipboard bridge swallows a rejected write (no unhandled rejection under Electron 44)', async () => {
+    const exposed = {};
+    const originalConsoleError = console.error;
+    const consoleErrorCalls = [];
+    console.error = (...args) => { consoleErrorCalls.push(args); };
+
+    const rejection = new Error('clipboard unavailable');
+    const mockElectron = {
+        contextBridge: {
+            exposeInMainWorld: (name, api) => { exposed[name] = api; }
+        },
+        ipcRenderer: { send: () => {}, on: () => {}, invoke: () => Promise.resolve() },
+        // Simulate a platform clipboard write that rejects under Electron 44.
+        clipboard: { writeText: () => Promise.reject(rejection) },
+        shell: { openExternal: () => {} }
+    };
+
+    const originalLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'electron') return mockElectron;
+        return originalLoad.call(this, request, parent, isMain);
+    };
+    try {
+        const preloadPath = path.join(__dirname, '..', 'preload.js');
+        delete require.cache[require.resolve(preloadPath)];
+        require(preloadPath);
+    } finally {
+        Module._load = originalLoad;
+    }
+
+    try {
+        // The bridge attaches its own .catch(); the returned Promise still
+        // rejects for any caller that chooses to await it, but the bridge's
+        // guard ensures the failure is logged rather than unhandled.
+        const returned = exposed.clipboard.writeText('ABCD-1234');
+        await assert.rejects(returned, /clipboard unavailable/);
+        // Give the bridge's internal .catch() a microtask turn to run.
+        await Promise.resolve();
+        assert.strictEqual(consoleErrorCalls.length, 1);
+        assert.strictEqual(consoleErrorCalls[0][0], 'clipboard.writeText failed');
+        assert.strictEqual(consoleErrorCalls[0][1], rejection);
+    } finally {
+        console.error = originalConsoleError;
+    }
 });

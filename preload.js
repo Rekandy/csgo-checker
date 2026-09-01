@@ -33,7 +33,21 @@ contextBridge.exposeInMainWorld('friendCode', {
 });
 
 contextBridge.exposeInMainWorld('clipboard', {
-  writeText: (text) => clipboard.writeText(text)
+  // Electron 44 rearchitected the clipboard to the W3C model: clipboard.writeText
+  // now returns a Promise. Renderer callers use this fire-and-forget (they do not
+  // await it), so guard the returned Promise with a .catch() here - mirroring the
+  // shell.openExternal .catch() pattern in main.js - so a rejected clipboard write
+  // is handled explicitly instead of surfacing as an unhandled promise rejection.
+  // The wrapper still returns the Promise, so awaiting callers keep working.
+  writeText: (text) => {
+    const result = clipboard.writeText(text);
+    if (result && typeof result.catch === 'function') {
+      result.catch((err) => {
+        console.error('clipboard.writeText failed', err);
+      });
+    }
+    return result;
+  }
 });
 
 contextBridge.exposeInMainWorld('shell', {
