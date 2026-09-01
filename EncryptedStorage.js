@@ -109,7 +109,7 @@ class EncryptedStorage {
       throw new Error('Missing file path argument.');
     }
     this.filePath = filePath;
-    this.options = Object.assign({}, defaultOptions, options);
+    this.options = { ...defaultOptions, ...options };
     this.storage = {};
 
     if (this.options.newData) {
@@ -169,7 +169,7 @@ class EncryptedStorage {
     deriveFromPassword(password, this.salt, DERIVATION_ROUNDS).then(derivedKey => {
       try {
         this.derivedKey = derivedKey;
-        if (opts && opts.sync) this.sync();
+        if (opts?.sync) this.sync();
         this.emit('loaded');
       } catch (error) {
         this.emit('error', error);
@@ -271,7 +271,7 @@ class EncryptedStorage {
     // mid-write can never leave the database in a partially-written state.
     const tmpPath = this.filePath + '.tmp';
 
-    if (this.options && this.options.asyncWrite) {
+    if (this.options?.asyncWrite) {
       fs.writeFile(tmpPath, finalJson, (err) => {
         if (err) throw err;
         try {
