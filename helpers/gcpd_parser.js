@@ -63,8 +63,8 @@ function toInt(s, dflt) {
   if (dflt === undefined) dflt = -1;
   if (!s) return dflt;
   const cleaned = s.replace(/[, ]/g, '');
-  const v = parseInt(cleaned, 10);
-  return isNaN(v) ? dflt : v;
+  const v = Number.parseInt(cleaned, 10);
+  return Number.isNaN(v) ? dflt : v;
 }
 
 /**
@@ -81,7 +81,7 @@ function parseGcpdTimestamp(s) {
   // Parse as UTC
   const dateStr = `${y}-${mo}-${d}T${h}:${mi}:${se}Z`;
   const ts = Date.parse(dateStr);
-  if (isNaN(ts)) return 0;
+  if (Number.isNaN(ts)) return 0;
   return Math.floor(ts / 1000);
 }
 
@@ -422,7 +422,7 @@ function parseAccountMain(html) {
         // Try to extract an integer
         const numMatch = blob.substring(pos).match(/^(\d+)/);
         if (numMatch) {
-          return parseInt(numMatch[1], 10);
+          return Number.parseInt(numMatch[1], 10);
         }
         pos = blob.indexOf(needle, pos);
       }
@@ -539,12 +539,12 @@ function parseCompetitiveMapRow(row) {
   if (!m) return null;
   return {
     name: m[1].trim(),
-    wins: parseInt(m[2], 10),
-    ties: parseInt(m[3], 10),
-    losses: parseInt(m[4], 10),
+    wins: Number.parseInt(m[2], 10),
+    ties: Number.parseInt(m[3], 10),
+    losses: Number.parseInt(m[4], 10),
     skill_group: m[5].trim() || null,
     last_match: m[6],
-    region: parseInt(m[7], 10)
+    region: Number.parseInt(m[7], 10)
   };
 }
 
