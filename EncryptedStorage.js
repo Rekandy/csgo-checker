@@ -220,9 +220,27 @@ class EncryptedStorage {
       try {
         this.derivedKey = derivedKey;
 
-        const decryptTool = crypto.createDecipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
-        let decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
-        decryptedData += decryptTool.final("utf8");
+        let decryptedData;
+        // A `tag` (or v===2 / alg==='aes-256-gcm') marks an authenticated
+        // AES-256-GCM envelope; anything else is a LEGACY unauthenticated
+        // aes-256-cbc envelope ({iv,salt,data} with no tag), which we still
+        // decrypt for backward compatibility. The next sync() upgrades it.
+        const isGcm = input_data.tag !== undefined
+          || input_data.v === 2
+          || input_data.alg === 'aes-256-gcm';
+
+        if (isGcm) {
+          const decryptTool = crypto.createDecipheriv("aes-256-gcm", this.derivedKey, Buffer.from(this.iv, 'hex'));
+          // setAuthTag BEFORE final(): a tampered ciphertext or tag makes
+          // final() throw, which is caught below (emit 'error', never write).
+          decryptTool.setAuthTag(Buffer.from(input_data.tag, 'hex'));
+          decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
+          decryptedData += decryptTool.final("utf8");
+        } else {
+          const decryptTool = crypto.createDecipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
+          decryptedData = decryptTool.update(input_data.data, "base64", "utf8");
+          decryptedData += decryptTool.final("utf8");
+        }
 
         if (validateJSON(decryptedData)) {
           this.storage = JSON.parse(decryptedData);
@@ -230,7 +248,8 @@ class EncryptedStorage {
         this.emit('loaded');
       } catch (error) {
         // Decryption failed (BAD_DECRYPT / wrong password / corrupted
-        // ciphertext / invalid JSON). Do NOT write anything; just report.
+        // ciphertext / failed GCM auth tag / invalid JSON). Do NOT write
+        // anything; just report.
         this.emit('error', error);
       }
     }).catch(error => {
@@ -241,29 +260,32 @@ class EncryptedStorage {
   sync() {
     const json = JSON.stringify(this.storage, null, this.options.jsonSpaces);
 
-    // SECURITY / SonarQube "use a secure mode and padding scheme" (AES-CBC):
-    // ACCEPTED RISK, deliberately kept as aes-256-cbc. This is local-only,
-    // at-rest encryption of the user's OWN account database on their OWN disk.
-    // The key is derived (pbkdf2-sha256, 200000 rounds) from a password only the
-    // user knows; there is no network, no untrusted party, and no
-    // chosen-ciphertext / tampering threat model for a self-owned local JSON
-    // file. Switching to an authenticated mode (AES-GCM) would change the
-    // on-disk envelope (a GCM auth tag is required) and therefore BRICK every
-    // existing user database written under the current {iv,salt,data} CBC format
-    // - a far worse outcome than the theoretical weakness the scanner flags.
-    // Backward-compatibility of already-encrypted user data outranks silencing
-    // this finding. See test/storage.js: the hard-coded CBC fixtures
-    // (password 'fixture-password-v1') and the on-disk-format test pin this
-    // envelope and must keep passing.
-    const encryptTool = crypto.createCipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
-  
+    // SECURITY: authenticated encryption with AES-256-GCM. GCM provides both
+    // confidentiality and integrity (a tampered ciphertext or tag fails the
+    // auth-tag check on decrypt), resolving the "use a secure mode and padding
+    // scheme" finding that flagged the previous unauthenticated aes-256-cbc.
+    // A FRESH random 12-byte nonce is generated per write (never reused, and
+    // deliberately not the persisted 16-byte CBC iv) because GCM nonce reuse
+    // under the same key is catastrophic. The key derivation is unchanged
+    // (pbkdf2-sha256, 200000 rounds, stable this.salt). We persist a VERSIONED
+    // envelope { v:2, alg:'aes-256-gcm', iv, salt, data, tag } so the read path
+    // can tell GCM records apart from LEGACY {iv,salt,data} aes-256-cbc records
+    // (no tag): legacy files still decrypt (see _loadExistingFile), and the
+    // next sync() transparently upgrades them to the GCM v:2 envelope.
+    const gcmNonce = crypto.randomBytes(12).toString('hex');
+    const encryptTool = crypto.createCipheriv("aes-256-gcm", this.derivedKey, Buffer.from(gcmNonce, 'hex'));
+
     let encryptedData = encryptTool.update(json, "utf8", "base64");
     encryptedData += encryptTool.final("base64");
+    const authTag = encryptTool.getAuthTag().toString('hex');
 
     const finalJson = JSON.stringify({
-      iv: this.iv,
+      v: 2,
+      alg: 'aes-256-gcm',
+      iv: gcmNonce,
       salt: this.salt,
-      data: encryptedData
+      data: encryptedData,
+      tag: authTag
     })
 
     // Atomic write: write to a temporary file first, then rename it over the

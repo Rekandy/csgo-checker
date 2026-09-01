@@ -152,7 +152,7 @@ test('backward-compat: pre-recorded blob rejects a wrong password without wiping
     assert.ok(before.equals(after), 'stored blob must remain byte-identical after a wrong-password attempt');
 });
 
-test('on-disk format stays {iv,salt,data} for backward compatibility', async () => {
+test('on-disk format is a versioned AES-256-GCM envelope', async () => {
     const dir = mkTmp();
     const file = path.join(dir, 'db.json');
 
@@ -161,8 +161,102 @@ test('on-disk format stays {iv,salt,data} for backward compatibility', async () 
     res.db.sync();
 
     const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.deepStrictEqual(Object.keys(onDisk).sort(), ['data', 'iv', 'salt']);
+    // Still carries iv/salt/data (so both envelope shapes pass validation) but
+    // now also v/alg/tag identifying the authenticated GCM scheme.
+    assert.strictEqual(onDisk.v, 2);
+    assert.strictEqual(onDisk.alg, 'aes-256-gcm');
     assert.strictEqual(typeof onDisk.iv, 'string');
     assert.strictEqual(typeof onDisk.salt, 'string');
     assert.strictEqual(typeof onDisk.data, 'string');
+    assert.strictEqual(typeof onDisk.tag, 'string');
+    // Fresh 12-byte GCM nonce -> 24 hex chars (not the 16-byte/32-hex CBC iv).
+    assert.strictEqual(onDisk.iv.length, 24);
+});
+
+test('GCM round-trip: create, set, sync, reopen -> data intact and envelope is GCM v:2', async () => {
+    const dir = mkTmp();
+    const file = path.join(dir, 'db.json');
+
+    const first = await open(file, 'gcm-pw', { newData: {} });
+    assert.strictEqual(first.event, 'loaded');
+    first.db.set('carol', { steamid: '789', rank: 7 });
+    first.db.sync();
+
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.strictEqual(onDisk.v, 2);
+    assert.strictEqual(typeof onDisk.tag, 'string');
+
+    const second = await open(file, 'gcm-pw');
+    assert.strictEqual(second.event, 'loaded');
+    assert.deepStrictEqual(second.db.get('carol'), { steamid: '789', rank: 7 });
+});
+
+test('GCM tamper-detection: flipping a data byte emits error and file stays byte-identical', async () => {
+    const dir = mkTmp();
+    const file = path.join(dir, 'db.json');
+
+    const first = await open(file, 'gcm-pw', { newData: { secret: 'value' } });
+    assert.strictEqual(first.event, 'loaded');
+    first.db.sync();
+
+    // Tamper with the ciphertext while keeping the GCM envelope structure.
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const buf = Buffer.from(parsed.data, 'base64');
+    buf[0] = buf[0] ^ 0xff;
+    parsed.data = buf.toString('base64');
+    fs.writeFileSync(file, JSON.stringify(parsed));
+    const before = fs.readFileSync(file);
+
+    const res = await open(file, 'gcm-pw');
+    assert.strictEqual(res.event, 'error', 'tampered GCM ciphertext must fail auth-tag verification');
+
+    const after = fs.readFileSync(file);
+    assert.ok(before.equals(after), 'tampered file must not be overwritten on error');
+});
+
+test('GCM tamper-detection: flipping a tag byte emits error and file stays byte-identical', async () => {
+    const dir = mkTmp();
+    const file = path.join(dir, 'db.json');
+
+    const first = await open(file, 'gcm-pw', { newData: { secret: 'value' } });
+    assert.strictEqual(first.event, 'loaded');
+    first.db.sync();
+
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const tag = Buffer.from(parsed.tag, 'hex');
+    tag[0] = tag[0] ^ 0xff;
+    parsed.tag = tag.toString('hex');
+    fs.writeFileSync(file, JSON.stringify(parsed));
+    const before = fs.readFileSync(file);
+
+    const res = await open(file, 'gcm-pw');
+    assert.strictEqual(res.event, 'error', 'tampered GCM auth tag must fail verification');
+
+    const after = fs.readFileSync(file);
+    assert.ok(before.equals(after), 'tampered file must not be overwritten on error');
+});
+
+test('legacy CBC -> GCM upgrade-on-save: load legacy blob, sync, becomes GCM v:2 and still decrypts', async () => {
+    const dir = mkTmp();
+    const file = path.join(dir, 'db.json');
+    // Same legacy aes-256-cbc {iv,salt,data} fixture used above.
+    const blob = '{"iv":"8a465c30b1bcaf2e828146467c16a660","salt":"0mTblJGc14Ey","data":"/tkYulVmY+D+EedfAPMJ+b2XQbgC9Lr1OR0y7jq0DnZr6jzFrTyPcIeLQYLwdsnwf1bNMxCdgkR+dczXzN16cDbZlUTTyfFGVKbAR8wTN9dtDcM+AwZ1l/BN78TS9E2dd+44+e0g0mjQqL30jdgaFE3nX7wsSlkgGACIOqri8pFfzlnXwzUOT/fh63R4BJjSHopDjl90N/lVdzZ4zLkoPB2XxL5Bbhu00nUOjYZ3u1E="}';
+    fs.writeFileSync(file, blob);
+
+    // Legacy envelope has no tag -> must still decrypt via aes-256-cbc.
+    const res = await open(file, 'fixture-password-v1');
+    assert.strictEqual(res.event, 'loaded', 'legacy CBC blob must still decrypt');
+
+    // The next sync() upgrades the on-disk envelope to GCM v:2.
+    res.db.sync();
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.strictEqual(onDisk.v, 2, 'file must be upgraded to GCM v:2 after sync');
+    assert.strictEqual(onDisk.alg, 'aes-256-gcm');
+    assert.strictEqual(typeof onDisk.tag, 'string');
+
+    // Reopening the upgraded file still yields the original data.
+    const reopened = await open(file, 'fixture-password-v1');
+    assert.strictEqual(reopened.event, 'loaded');
+    assert.deepStrictEqual(reopened.db.get('alice'), { steamid: '76561198000000001', rank: 18 });
+    assert.deepStrictEqual(reopened.db.get('bob'), { steamid: '76561198000000002', rank: 0 });
 });
