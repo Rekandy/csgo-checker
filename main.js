@@ -23,7 +23,16 @@ const { xpIntoLevel, xpModuloLevel } = require('./helpers/xp.js');
 // applyHelloResult so that handler reads as straight-line assignments. Behavior
 // is byte-for-behavior identical; no branch is added, removed, or reordered.
 
-// Community ban wins over penalty_reason, which wins over VAC, else 0.
+// Community ban wins over penalty_reason, which wins over VAC, else the numeric
+// 0 sentinel.
+//
+// The mixed return type (String | 0) that SonarQube flags is load-bearing and
+// intentional, NOT a defect: `0` is the "no penalty" sentinel. It matches the
+// `penalty_reason: 0` default the data object is initialized with, and the
+// renderer's formatPenalty() branches on `reason === 0` (strict) to render '-'.
+// Returning a string '0' here (to make the type uniform) would break that
+// strict comparison and change the rendered ban column, so the number is kept
+// deliberately.
 function resolveHelloPenaltyReason(msg, limitations) {
     if (limitations.communityBanned) return 'Community ban';
     if (msg.penalty_reason > 0) return penalty_reason_string(msg.penalty_reason);
@@ -362,18 +371,22 @@ function openEncryptedDb(pass) {
  * @returns {string}
  */
 function normalizeDecryptError(error) {
-    if (typeof error != 'string') {
-        if (error.reason == 'BAD_DECRYPT') {
-            return 'Invalid password';
-        }
-        else if (error.code) {
-            return error.code;
-        }
-        else {
-            return error.toString();
-        }
+    if (typeof error === 'string') {
+        return error;
     }
-    return error;
+    if (error.reason == 'BAD_DECRYPT') {
+        return 'Invalid password';
+    }
+    if (error.code) {
+        return error.code;
+    }
+    // A plain Error (e.g. the empty-password guard) carries its human-readable
+    // text in .message; use that so the dialog shows exactly that string rather
+    // than the "Error: ..." prefix that error.toString() would add.
+    if (error instanceof Error && error.message) {
+        return error.message;
+    }
+    return error.toString();
 }
 
 async function openDB() {
@@ -388,7 +401,7 @@ async function openDB() {
                 let pass = await promptForPassword(error_message);
                 try {
                     if (pass == null || pass.length === 0) {
-                        throw 'Password can not be empty';
+                        throw new Error('Password can not be empty');
                     }
                     db = await openEncryptedDb(pass);
                     //we decrypted successfully, exit loop
@@ -623,7 +636,7 @@ ipcMain.handle('encryption:remove', async () => {
         }
         try {
             if (pass.length == 0) {
-                throw 'Password can not be empty';
+                throw new Error('Password can not be empty');
             }
             //attempt to decrypt using this password
             let temp_db = await new Promise((res, rej) => {
@@ -647,18 +660,7 @@ ipcMain.handle('encryption:remove', async () => {
             return false; //false is success as in non encrypted
         } catch (error) {
             logger.error('Failed to disable encryption', { op: 'decrypt', error });
-            if (typeof error != 'string') {
-                if (error.reason == 'BAD_DECRYPT') {
-                    error = 'Invalid password';
-                }
-                else if (error.code) {
-                    error = error.code;
-                }
-                else {
-                    error = error.toString();
-                }
-            }
-            error_message = error;
+            error_message = normalizeDecryptError(error);
         }
     }
 });
