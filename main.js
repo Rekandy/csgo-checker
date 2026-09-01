@@ -1050,52 +1050,62 @@ function check_account(username, pass, sharedSecret) {
             }
         });
 
-        steamClient.on('steamGuard', (domain, callback) => {
-            // Prefer the shared-secret TOTP path whenever a shared secret exists
-            // (works for both mobile-authenticator and, when Steam reports no
-            // email domain, app-based Steam Guard).
-            if (sharedSecret && sharedSecret.length > 0) {
-                if (steamTimeOffset == null) {
-                    SteamTotp.getTimeOffset((err, offset) => {
-                        if (err) {
-                            clearCurrentlyChecking(username);
-                            reject(new Error('unable to get steam time offset'));
-                            return;
-                        }
-                        steamTimeOffset = offset;
-                        callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
-                    });
+        // Reject the current check as a (non-retryable) missing-Steam-Guard
+        // failure. Centralised so every steam-guard bail-out is identical.
+        function rejectSteamGuardMissing() {
+            clearCurrentlyChecking(username);
+            const err = new Error('steam guard missing');
+            err.eresult = 63; // steam_guard_required (non-retryable)
+            reject(err);
+        }
+
+        // Answer a Steam Guard challenge using the stored shared secret (TOTP).
+        // Works for mobile-authenticator and app-based Steam Guard. Refreshes
+        // the cached time offset first when it is not yet known.
+        function answerSteamGuardWithSharedSecret(callback) {
+            if (steamTimeOffset != null) {
+                callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
+                return;
+            }
+            SteamTotp.getTimeOffset((err, offset) => {
+                if (err) {
+                    clearCurrentlyChecking(username);
+                    reject(new Error('unable to get steam time offset'));
                     return;
                 }
+                steamTimeOffset = offset;
                 callback(SteamTotp.getAuthCode(sharedSecret, steamTimeOffset));
-            } else if (!win) {
-                clearCurrentlyChecking(username);
-                const err = new Error('steam guard missing');
-                err.eresult = 63; // classify as steam_guard_required (non-retryable)
-                reject(err);
+            });
+        }
+
+        // Prompt the renderer for a Steam Guard code, scoping the response to
+        // THIS username so concurrent prompts never cross accounts.
+        function answerSteamGuardViaRenderer(callback) {
+            setAccountStatus(username, STATUS.STEAM_GUARD_REQUIRED);
+            win.webContents.send('steam:steamguard', username);
+            const responseHandler = (event, code, respondedUsername) => {
+                if (respondedUsername != null && respondedUsername !== username) {
+                    return; // not for us - leave the listener in place
+                }
+                removeSteamGuardListener();
+                if (code) {
+                    callback(code);
+                } else {
+                    rejectSteamGuardMissing();
+                }
+            };
+            steamGuardResponseHandler = responseHandler;
+            ipcMain.on('steam:steamguard:response', responseHandler);
+        }
+
+        steamClient.on('steamGuard', (domain, callback) => {
+            // Prefer the shared-secret TOTP path whenever a shared secret exists.
+            if (sharedSecret && sharedSecret.length > 0) {
+                answerSteamGuardWithSharedSecret(callback);
+            } else if (win) {
+                answerSteamGuardViaRenderer(callback);
             } else {
-                setAccountStatus(username, STATUS.STEAM_GUARD_REQUIRED);
-                win.webContents.send('steam:steamguard', username);
-                // Scope the response to THIS username so concurrent Steam Guard
-                // prompts never deliver one account's code to another's login.
-                // The renderer still replies on the shared channel with (code,
-                // username); we ignore responses meant for other accounts.
-                const responseHandler = (event, code, respondedUsername) => {
-                    if (respondedUsername != null && respondedUsername !== username) {
-                        return; // not for us - leave the listener in place
-                    }
-                    removeSteamGuardListener();
-                    if (!code) {
-                        clearCurrentlyChecking(username);
-                        const err = new Error('steam guard missing');
-                        err.eresult = 63; // steam_guard_required (non-retryable)
-                        reject(err);
-                    } else {
-                        callback(code);
-                    }
-                };
-                steamGuardResponseHandler = responseHandler;
-                ipcMain.on('steam:steamguard:response', responseHandler);
+                rejectSteamGuardMissing();
             }
         });
 
