@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld('friendCode', {
 });
 
 contextBridge.exposeInMainWorld('clipboard', {
-  writeText: (text, type) => clipboard.writeText(text, type)
+  writeText: (text) => clipboard.writeText(text)
 });
 
 contextBridge.exposeInMainWorld('shell', {
