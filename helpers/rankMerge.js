@@ -256,32 +256,49 @@ const GC_RANK_UPDATE_TYPES = {
  * @param {function(string, number, number):void} [log] - optional log callback
  * @returns {object} data
  */
+/**
+ * Write the rank field for a 9194 entry, honoring the premier expired-guard.
+ * When premierExpiredGuard is set, do not clobber an expired premier sentinel
+ * (-1) already set by the GCPD path (which has the wins signal to distinguish
+ * expired from never-ranked); otherwise assign unconditionally.
+ *
+ * @param {object} data - account data object (mutated in place)
+ * @param {object} spec - GC_RANK_UPDATE_TYPES descriptor
+ * @param {number} rankId - normalized rank_id to write
+ */
+function writeRankRespectingPremierGuard(data, spec, rankId) {
+  if (spec.premierExpiredGuard && data[spec.rank] === -1) return;
+  data[spec.rank] = rankId;
+}
+
+/**
+ * Apply the competitive-VAC cascade for a single secondary mode: when the mode
+ * cascades and the primary competitive result is VAC (data.wins === -1), force
+ * this mode's rank/wins to -1. No-op otherwise.
+ *
+ * @param {object} data - account data object (mutated in place)
+ * @param {object} spec - GC_RANK_UPDATE_TYPES descriptor
+ */
+function applyVacCascadeForMode(data, spec) {
+  if (spec.vacCascade && data.wins === -1) { // vac banned
+    data[spec.wins] = -1;
+    data[spec.rank] = -1;
+  }
+}
+
 function applyGcRankUpdateEntry(data, ranking, log) {
   if (!data || !ranking) return data;
   const spec = GC_RANK_UPDATE_TYPES[ranking.rank_type_id];
   if (!spec) return data;
-  const rankId = ranking.rank_id ?? 0;
-  const rankWins = ranking.wins ?? 0;
 
-  data[spec.wins] = rankWins;
-  if (spec.premierExpiredGuard) {
-    // Do not clobber an expired premier sentinel (-1) already set by the GCPD
-    // path, which has the wins signal to tell expired from never-ranked.
-    if (data[spec.rank] !== -1) {
-      data[spec.rank] = rankId;
-    }
-  } else {
-    data[spec.rank] = rankId;
-  }
+  data[spec.wins] = ranking.wins ?? 0;
+  writeRankRespectingPremierGuard(data, spec, ranking.rank_id ?? 0);
 
   if (typeof log === 'function') {
     log(spec.label, data[spec.rank], data[spec.wins]);
   }
 
-  if (spec.vacCascade && data.wins === -1) { // vac banned
-    data[spec.wins] = -1;
-    data[spec.rank] = -1;
-  }
+  applyVacCascadeForMode(data, spec);
 
   return data;
 }
