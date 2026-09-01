@@ -59,3 +59,30 @@ test('neutralizes a raw <img onerror> injection into a text node', () => {
     assert.ok(!/<img\b/i.test(escaped), 'raw <img> tag must not survive');
     assert.match(escaped, /&lt;img/);
 });
+
+test('neutralizes an attribute-breakout via the map-icon src path (C-1 src sink)', () => {
+    // Regression for the map-icon `<img src="${mapIconPath}">` sink in
+    // html/js/front.js. getMapIconPath's `de_`/`ar_`/`cs_` fallback returns
+    // `img/maps-icons/${mapName}.svg` with the RAW scraped name embedded, so a
+    // prefixed breakout name reaches the src attribute. Escaping the returned
+    // path at the interpolation boundary must neutralize the breakout. This
+    // asserts on the exact string the fallback produces (front.js interpolates
+    // escapeHtml(mapIconPath), so this fails if the src sink is left raw).
+    // Note: the payload MUST start with de_/ar_/cs_ or getMapIconPath returns
+    // '' and never reaches the src sink.
+    const rawIconPath = 'img/maps-icons/de_x" onerror="alert(1).svg';
+    const escaped = escapeHtml(rawIconPath);
+    assert.ok(!escaped.includes('"'), 'no raw double-quote may survive in the src value');
+    assert.match(escaped, /&quot;/);
+    assert.strictEqual(escaped, 'img/maps-icons/de_x&quot; onerror=&quot;alert(1).svg');
+});
+
+test('leaves a legitimate prefixed map-icon path unchanged (src no-op)', () => {
+    // A real fallback path (e.g. a valid `de_`-prefixed map) contains none of
+    // the escaped characters, so escaping it is a no-op and legitimate icons
+    // still resolve byte-identically.
+    assert.strictEqual(
+        escapeHtml('img/maps-icons/de_dust2.svg'),
+        'img/maps-icons/de_dust2.svg'
+    );
+});

@@ -1055,10 +1055,18 @@ document.addEventListener('DOMContentLoaded', () => {
           // the escaped characters, so this is a no-op for normal data.
           const mapNameSafe = escapeHtml(mapName);
           const skillGroupSafe = escapeHtml(mapData.skill_group || 'N/A');
+          // SECURITY: getMapIconPath's `de_`/`ar_`/`cs_` fallback returns
+          // `img/maps-icons/${mapName}.svg` with the RAW scraped name embedded,
+          // so a prefixed breakout name like `de_x" onerror="alert(1)` would
+          // otherwise close the src="..." attribute and inject a handler. Escape
+          // the returned path at the interpolation boundary; this is a no-op for
+          // legitimate paths (they contain none of & < > " '), so real icons
+          // still resolve byte-identically.
+          const mapIconPathSafe = escapeHtml(mapIconPath);
           
           row.innerHTML = `
             <td class="text-center" style="width: 50px;">
-              ${mapIconPath ? `<img src="${mapIconPath}" alt="${mapNameSafe}" style="max-width: 100%;" onerror="this.style.display='none'">` : ''}
+              ${mapIconPath ? `<img src="${mapIconPathSafe}" alt="${mapNameSafe}" style="max-width: 100%;" onerror="this.style.display='none'">` : ''}
             </td>
             <td class="text-center">${mapNameSafe}</td>
             <td class="text-center">${mapData.wins || 0}</td>
