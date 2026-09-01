@@ -1017,9 +1017,9 @@ document.addEventListener('DOMContentLoaded', () => {
           // Преобразуем название группы навыков в номер ранга
           let rank = 0;
           if (mapData.skill_group) {
-            const rankMatch = mapData.skill_group.match(/\d+/);
+            const rankMatch = /\d+/.exec(mapData.skill_group);
             if (rankMatch) {
-              rank = parseInt(rankMatch[0]);
+              rank = Number.parseInt(rankMatch[0], 10);
             }
           }
           

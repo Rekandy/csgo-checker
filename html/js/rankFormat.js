@@ -257,12 +257,12 @@ function formatExpireTime(time) {
   console.log('Original date:', time);
   
   // Проверяем, что дата валидна
-  if (!(time instanceof Date && !isNaN(time))) {
+  if (!(time instanceof Date && !Number.isNaN(time.getTime()))) {
     console.error('Invalid date provided to formatExpireTime');
     return 'Invalid date';
   }
   
-  time = new Date(time.getTime());
+  time = new Date(time);
   console.log('Converted date:', time);
   //https://github.com/dumbasPL/csgo-checker/issues/3#issuecomment-827474759
   //this is untested yet, i'm trusting what this guy says.
