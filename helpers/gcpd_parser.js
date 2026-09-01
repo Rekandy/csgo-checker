@@ -505,22 +505,43 @@ function looksLikeErrorPage(html) {
  * @param {string} html - Raw GCPD matchmaking HTML
  * @returns {Object<string, {wins:number, ties:number, losses:number, skill_group:(string|null), last_match:string, region:number}>}
  */
+// Shared body of the competitive-map row regex. The /g scan wraps it in
+// <tr>...</tr> to slice whole rows out of the page; the per-row exec matches
+// the same capture groups inside a single sliced row. Keeping one source here
+// guarantees the two stay byte-identical.
+const COMPETITIVE_MAP_ROW_SOURCE = '<td>Ranked Competitive<\\/td>[\\s\\S]*?<td>([^<]+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>([^<]*)<\\/td>[\\s\\S]*?<td>(\\d\\d\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d GMT)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>';
+
+/**
+ * Parse a single sliced competitive-map row into its structured record.
+ * Returns null when the row does not match. Field extraction (trims, parseInt
+ * radix 10, null skill_group) is byte-identical to the original inline code.
+ * @param {string} row - one <tr>...</tr> slice
+ * @returns {?{name:string, wins:number, ties:number, losses:number, skill_group:(string|null), last_match:string, region:number}}
+ */
+function parseCompetitiveMapRow(row) {
+  const m = new RegExp(COMPETITIVE_MAP_ROW_SOURCE).exec(row);
+  if (!m) return null;
+  return {
+    name: m[1].trim(),
+    wins: parseInt(m[2], 10),
+    ties: parseInt(m[3], 10),
+    losses: parseInt(m[4], 10),
+    skill_group: m[5].trim() || null,
+    last_match: m[6],
+    region: parseInt(m[7], 10)
+  };
+}
+
 function extractCompetitiveMaps(html) {
   const mapsData = {};
   if (!html) return mapsData;
-  const mapRows = html.match(/<tr>[\s\S]*?<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<\/tr>/g);
+  const mapRows = html.match(new RegExp('<tr>[\\s\\S]*?' + COMPETITIVE_MAP_ROW_SOURCE + '[\\s\\S]*?<\\/tr>', 'g'));
   if (mapRows) {
     mapRows.forEach(function(row) {
-      const mapMatch = /<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>/.exec(row);
-      if (mapMatch) {
-        mapsData[mapMatch[1].trim()] = {
-          wins: parseInt(mapMatch[2], 10),
-          ties: parseInt(mapMatch[3], 10),
-          losses: parseInt(mapMatch[4], 10),
-          skill_group: mapMatch[5].trim() || null,
-          last_match: mapMatch[6],
-          region: parseInt(mapMatch[7], 10)
-        };
+      const parsed = parseCompetitiveMapRow(row);
+      if (parsed) {
+        const { name, ...record } = parsed;
+        mapsData[name] = record;
       }
     });
   }
