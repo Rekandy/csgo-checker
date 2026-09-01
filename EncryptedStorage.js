@@ -241,6 +241,20 @@ class EncryptedStorage {
   sync() {
     const json = JSON.stringify(this.storage, null, this.options.jsonSpaces);
 
+    // SECURITY / SonarQube "use a secure mode and padding scheme" (AES-CBC):
+    // ACCEPTED RISK, deliberately kept as aes-256-cbc. This is local-only,
+    // at-rest encryption of the user's OWN account database on their OWN disk.
+    // The key is derived (pbkdf2-sha256, 200000 rounds) from a password only the
+    // user knows; there is no network, no untrusted party, and no
+    // chosen-ciphertext / tampering threat model for a self-owned local JSON
+    // file. Switching to an authenticated mode (AES-GCM) would change the
+    // on-disk envelope (a GCM auth tag is required) and therefore BRICK every
+    // existing user database written under the current {iv,salt,data} CBC format
+    // - a far worse outcome than the theoretical weakness the scanner flags.
+    // Backward-compatibility of already-encrypted user data outranks silencing
+    // this finding. See test/storage.js: the hard-coded CBC fixtures
+    // (password 'fixture-password-v1') and the on-disk-format test pin this
+    // envelope and must keep passing.
     const encryptTool = crypto.createCipheriv("aes-256-cbc", this.derivedKey, Buffer.from(this.iv, 'hex'));
   
     let encryptedData = encryptTool.update(json, "utf8", "base64");
