@@ -43,7 +43,12 @@ function findPremierBucket(rank) {
 /**
  * True when a premier rating value represents the unranked/none state (empty
  * cell, null/undefined, or 0).
- * @param {Number} rank
+ *
+ * `rank` can arrive either as a Number or as a numeric/empty string from stored
+ * or table-parsed account data (an empty table cell surfaces as ''), so the
+ * `=== ''` guard is intentional and load-bearing, not dead code. The JSDoc type
+ * reflects both shapes.
+ * @param {Number|string} rank
  * @returns {Boolean}
  */
 function isPremierUnranked(rank) {

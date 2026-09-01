@@ -193,6 +193,25 @@ const SORT_COLUMN_TRANSFORMS = {
 };
 
 /**
+ * Compare two cell values for sorting.
+ *
+ * Numeric columns (rank/lvl/prime, normalized by SORT_COLUMN_TRANSFORMS) still
+ * sort numerically. String columns use localeCompare for a reliable,
+ * locale-aware alphabetical order instead of the byte-wise `>` operator that
+ * SonarQube flags as unreliable. The ascending order this produces is later
+ * reversed for DESC by the caller, matching the previous behavior.
+ * @param {*} a
+ * @param {*} b
+ * @returns {Number} negative if a<b, positive if a>b, 0 if equal
+ */
+function compareSortValues(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b;
+  }
+  return String(a).localeCompare(String(b));
+}
+
+/**
  * Compute the ordered list of account logins for the given column and sort
  * direction, applying any per-column value transform first.
  * @param {String} col_name column data name
@@ -222,11 +241,7 @@ function computeSortOrder(col_name, new_sort_dir) {
     });
   }
   if (new_sort_dir != 'none') {
-    accounts.sort((a, b) => {
-      a = a[1];
-      b = b[1];
-      return a[col_name] > b[col_name] ? 1 : -1;
-    });
+    accounts.sort((a, b) => compareSortValues(a[1][col_name], b[1][col_name]));
   }
   if (new_sort_dir == 'DESC') {
     accounts.reverse();
@@ -591,6 +606,10 @@ async function updateAccounts(force = false) {
           showToast('SteamGuard Code copied to clipboard', 'success');
         }
         catch (e) {
+          // The failure (bad/absent shared secret, IPC error) is surfaced to
+          // the user as a toast, which is the meaningful handling here; there is
+          // no redacting logger in the renderer, so we intentionally do not log
+          // the raw error object (it can reference secret-bearing data).
           showToast('An error occured when getting steam guard code', 'danger')
         }
       });
@@ -643,6 +662,12 @@ async function updateAccounts(force = false) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Intentional side-effect instantiation: constructing a bootstrap.Tooltip
+  // registers the hover-triggered tooltip on the element and stores the instance
+  // internally on Bootstrap's side (retrievable later via
+  // bootstrap.Tooltip.getInstance, as done in renderRowRanks). We do not need
+  // the returned reference here, so it is deliberately not assigned - removing
+  // the `new` would disable tooltips for the static markup.
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
     new bootstrap.Tooltip(el, { trigger: 'hover' });
   });
