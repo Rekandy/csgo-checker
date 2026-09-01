@@ -338,6 +338,9 @@ function parseMatchmaking(html) {
   try {
     tables = extractTables(html);
   } catch (e) {
+    // Resilient parsing: malformed/unexpected HTML must never throw. Return the
+    // zero-initialized result so the caller treats this page as "nothing found"
+    // rather than crashing the check.
     return result;
   }
   if (tables.length === 0) return result;
@@ -349,6 +352,8 @@ function parseMatchmaking(html) {
       processSingleTable(tables[t], result, nowSeconds);
     }
   } catch (e) {
+    // A single unparseable table must not discard everything already parsed;
+    // return the partially-populated result instead of throwing.
     return result;
   }
 
@@ -379,6 +384,9 @@ function parseAccountMain(html) {
   try {
     tables = extractTables(html);
   } catch (e) {
+    // Resilient parsing: malformed/unexpected HTML must never throw. Return the
+    // zero-initialized result so the caller treats this page as "nothing found"
+    // rather than crashing the check.
     return result;
   }
   if (tables.length === 0) return result;
@@ -509,6 +517,14 @@ function looksLikeErrorPage(html) {
 // <tr>...</tr> to slice whole rows out of the page; the per-row exec matches
 // the same capture groups inside a single sliced row. Keeping one source here
 // guarantees the two stay byte-identical.
+//
+// NOTE (SonarQube regex-complexity): the seven `[\s\S]*?` gap separators are
+// irreducible - each skips the intervening cells between the seven <td> values
+// we actually capture (map name, wins, ties, losses, skill group, last-match
+// timestamp, region), in order, within one table row. Collapsing or reusing a
+// separator would change which cells are matched and break byte-identical
+// extraction (see test/gcpd_parser.js extractCompetitiveMaps cases), so the
+// complexity is accepted rather than "simplified" into a behavior change.
 const COMPETITIVE_MAP_ROW_SOURCE = '<td>Ranked Competitive<\\/td>[\\s\\S]*?<td>([^<]+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>([^<]*)<\\/td>[\\s\\S]*?<td>(\\d\\d\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d GMT)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>';
 
 /**
