@@ -41,7 +41,7 @@ async function deriveFromPassword(password, salt, rounds) {
   const bits = (PASSWORD_KEY_SIZE + HMAC_KEY_SIZE) * 8;
   const derivedKeyData = await pbkdf2(password, salt, rounds, bits);
   const derivedKeyHex = derivedKeyData.toString("hex");
-  return Buffer.from(derivedKeyHex.substr(0, derivedKeyHex.length / 2), "hex");
+  return Buffer.from(derivedKeyHex.slice(0, derivedKeyHex.length / 2), "hex");
 }
 
 function generateSalt(length) {
@@ -52,7 +52,7 @@ function generateSalt(length) {
   while (output.length < length) {
     output += crypto.randomBytes(3).toString("base64");
     if (output.length > length) {
-      output = output.substr(0, length);
+      output = output.slice(0, length);
     }
   }
   return output;

@@ -287,9 +287,9 @@ function formatExpireTime(time) {
  */
 function getContrastYIQ(color) {
   color = color.trim().replace('#', '');
-  var r = parseInt(color.substr(0, 2), 16);
-  var g = parseInt(color.substr(2, 2), 16);
-  var b = parseInt(color.substr(4, 2), 16);
-  var yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
+  const r = Number.parseInt(color.substring(0, 2), 16);
+  const g = Number.parseInt(color.substring(2, 4), 16);
+  const b = Number.parseInt(color.substring(4, 6), 16);
+  const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
   return (yiq >= 128) ? 'black' : 'white';
 }
