@@ -32,7 +32,7 @@ function parseAccountLines(text) {
     }
 
     // Strip a leading UTF-8 BOM if present.
-    if (text.charCodeAt(0) === 0xfeff) {
+    if (text.codePointAt(0) === 0xfeff) {
         text = text.slice(1);
     }
 
