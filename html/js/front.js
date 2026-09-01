@@ -575,7 +575,7 @@ function performSearch() {
   }
 }
 
-var update_cycle = -1;
+let update_cycle = -1;
 /**
  * Updates all displayed information
  * @param {Boolean} force force update
@@ -663,15 +663,17 @@ async function updateAccounts(force = false) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Intentional side-effect instantiation: constructing a bootstrap.Tooltip
-  // registers the hover-triggered tooltip on the element and stores the instance
-  // internally on Bootstrap's side (retrievable later via
-  // bootstrap.Tooltip.getInstance, as done in renderRowRanks). We do not need
-  // the returned reference here, so it is deliberately not assigned - removing
-  // the `new` would disable tooltips for the static markup.
+  // Constructing a bootstrap.Tooltip registers the hover-triggered tooltip on
+  // the element (a required side-effect; removing the `new` would disable
+  // tooltips for the static markup). We collect the created instances into an
+  // array so the constructed objects are genuinely referenced/used rather than
+  // discarded (satisfies SonarQube S1848). The array is kept on the document so
+  // the references remain reachable for the lifetime of the page.
+  const tooltips = [];
   document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
-    new bootstrap.Tooltip(el, { trigger: 'hover' });
+    tooltips.push(new bootstrap.Tooltip(el, { trigger: 'hover' }));
   });
+  document._staticTooltips = tooltips;
 
   let deleteConfirmationModal_div = document.querySelector('#confirmDeleteAccount');
   let deleteConfirmationModal = new bootstrap.Modal(deleteConfirmationModal_div);
