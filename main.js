@@ -672,7 +672,7 @@ ipcMain.handle('accounts:get', () => {
     for (const username in data) {
         if (Object.hasOwn(data, username)) {
             const account = data[username];
-            if(currently_checking.indexOf(username) != -1){
+            if(currently_checking.includes(username)){
                 account.pending = true;
             }
         }
@@ -1311,11 +1311,10 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
                     ? CMsgClientWelcome.outofdate_subscribed_caches
                     : [];
-                for (let i = 0; i < outofdateCaches.length; i++) {
-                    const outofdate_cache = outofdateCaches[i];
+                for (const outofdate_cache of outofdateCaches) {
                     const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
-                    for (let j = 0; j < cacheObjects.length; j++) {
-                        processClientWelcomeCacheObject(cacheObjects[j], data, username, steamClient, appid, () => Done, sleep);
+                    for (const cacheObject of cacheObjects) {
+                        processClientWelcomeCacheObject(cacheObject, data, username, steamClient, appid, () => Done, sleep);
                     }
                 }
             };
@@ -1424,8 +1423,8 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
             // that an earlier handler established.
             const applyProfileRankings = (profile) => {
                 if (Array.isArray(profile.rankings) && profile.rankings.length > 0) {
-                    for (let r = 0; r < profile.rankings.length; r++) {
-                        applyGcRanking(data, profile.rankings[r]);
+                    for (const ranking of profile.rankings) {
+                        applyGcRanking(data, ranking);
                     }
                     logger.debug('PlayersProfile ranks resolved', {
                         account: username,
@@ -1446,8 +1445,7 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 }
                 let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
                 if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
-                    for (let p = 0; p < profileMsg.account_profiles.length; p++) {
-                        const profile = profileMsg.account_profiles[p];
+                    for (const profile of profileMsg.account_profiles) {
                         applyProfileLevelAndXp(profile);
                         applyProfileRankings(profile);
                     }

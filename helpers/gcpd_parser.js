@@ -21,8 +21,7 @@ function stripTags(str) {
   // Remove HTML tags
   let out = '';
   let inTag = false;
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
+  for (const c of str) {
     if (c === '<') { inTag = true; continue; }
     if (c === '>') { inTag = false; continue; }
     if (!inTag) {
@@ -135,9 +134,9 @@ function extractTables(html) {
 function headerContainsAnyCell(table, needles) {
   if (!table || table.length === 0) return false;
   const header = table[0];
-  for (let i = 0; i < header.length; i++) {
-    for (let j = 0; j < needles.length; j++) {
-      if (containsCI(header[i], needles[j])) return true;
+  for (const cell of header) {
+    for (const needle of needles) {
+      if (containsCI(cell, needle)) return true;
     }
   }
   return false;
@@ -161,8 +160,8 @@ const KEYWORDS_MAP = ['Map', 'Mappa', 'Mapa', 'Carte', 'Karte', 'Карта'];
 function findColumn(header, needles) {
   if (!header) return -1;
   for (let c = 0; c < header.length; c++) {
-    for (let j = 0; j < needles.length; j++) {
-      if (containsCI(header[c], needles[j])) return c;
+    for (const needle of needles) {
+      if (containsCI(header[c], needle)) return c;
     }
   }
   return -1;
@@ -348,8 +347,8 @@ function parseMatchmaking(html) {
 
   try {
     const nowSeconds = Math.floor(Date.now() / 1000);
-    for (let t = 0; t < tables.length; t++) {
-      processSingleTable(tables[t], result, nowSeconds);
+    for (const table of tables) {
+      processSingleTable(table, result, nowSeconds);
     }
   } catch (e) {
     // A single unparseable table must not discard everything already parsed;
@@ -396,12 +395,10 @@ function parseAccountMain(html) {
 
   // Concatenate all cell text into a single blob for label searching
   let blob = '';
-  for (let t = 0; t < tables.length; t++) {
-    const tbl = tables[t];
-    for (let r = 0; r < tbl.length; r++) {
-      const row = tbl[r];
-      for (let c = 0; c < row.length; c++) {
-        blob += row[c] + '\n';
+  for (const tbl of tables) {
+    for (const row of tbl) {
+      for (const cell of row) {
+        blob += cell + '\n';
       }
     }
   }
@@ -412,8 +409,8 @@ function parseAccountMain(html) {
    * @returns {number} The extracted integer, or -1 if not found
    */
   function extractIntAfter(labels) {
-    for (let l = 0; l < labels.length; l++) {
-      const needle = labels[l] + ':';
+    for (const label of labels) {
+      const needle = label + ':';
       let pos = blob.indexOf(needle);
       while (pos !== -1) {
         pos += needle.length;
