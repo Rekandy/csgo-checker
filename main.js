@@ -17,6 +17,43 @@ const { parseAccountLines } = require('./helpers/importParser.js');
 const { TaskQueue } = require('./helpers/queue.js');
 const { STATUS, statusFromEresult, shouldRetry, backoffDelay } = require('./helpers/checker.js');
 const { xpIntoLevel, xpModuloLevel } = require('./helpers/xp.js');
+
+// --- Pure resolvers for MatchmakingGC2ClientHello fields ---
+// Each function reproduces exactly one of the original nested ternaries from
+// applyHelloResult so that handler reads as straight-line assignments. Behavior
+// is byte-for-behavior identical; no branch is added, removed, or reordered.
+
+// Community ban wins over penalty_reason, which wins over VAC, else 0.
+function resolveHelloPenaltyReason(msg, limitations) {
+    if (limitations.communityBanned) return 'Community ban';
+    if (msg.penalty_reason > 0) return penalty_reason_string(msg.penalty_reason);
+    if (msg.vac_banned) return 'VAC';
+    return 0;
+}
+
+// Permanent bans/vac/community => -1 sentinel; timed penalty => epoch expiry;
+// else 0.
+function resolveHelloPenaltySeconds(msg, limitations) {
+    if (msg.vac_banned || limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason)) {
+        return -1;
+    }
+    if (msg.penalty_seconds > 0) {
+        return Math.floor(Date.now() / 1000) + msg.penalty_seconds;
+    }
+    return 0;
+}
+
+// VAC forces -1; a fresh ranking supplies wins/rank; otherwise 0.
+function resolveHelloWins(msg, haveRanking, ranking) {
+    if (msg.vac_banned) return -1;
+    return haveRanking ? (ranking.wins || 0) : 0;
+}
+
+function resolveHelloRank(msg, haveRanking, ranking) {
+    if (msg.vac_banned) return -1;
+    return haveRanking ? (ranking.rank_id || 0) : 0;
+}
+
 // Исправление загрузки proto-файлов
 let Protos;
 try {
@@ -1304,10 +1341,10 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 const limitations = steamClient.limitations || {};
                 const ranking = msg.ranking || {};
                 const haveRanking = attempts < 5 && msg.ranking != null;
-                data.penalty_reason = limitations.communityBanned ? 'Community ban' : msg.penalty_reason > 0 ? penalty_reason_string(msg.penalty_reason) : msg.vac_banned ? 'VAC' : 0;
-                data.penalty_seconds = msg.vac_banned || limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason) ? -1 : msg.penalty_seconds > 0 ? (Math.floor(Date.now() / 1000) + msg.penalty_seconds) : 0;
-                data.wins = msg.vac_banned ? -1 : haveRanking ? (ranking.wins || 0) : 0;
-                data.rank = msg.vac_banned ? -1 : haveRanking ? (ranking.rank_id || 0) : 0;
+                data.penalty_reason = resolveHelloPenaltyReason(msg, limitations);
+                data.penalty_seconds = resolveHelloPenaltySeconds(msg, limitations);
+                data.wins = resolveHelloWins(msg, haveRanking, ranking);
+                data.rank = resolveHelloRank(msg, haveRanking, ranking);
                 data.name = (steamClient.accountInfo && steamClient.accountInfo.name) || data.name || username;
                 data.lvl = msg.player_level || data.lvl;
                 data.steamid = steamClient.steamID.getSteamID64();
@@ -1326,23 +1363,23 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
 
             // GC_MSG.MatchmakingGC2ClientHello
             const handleMatchmakingHello = (appid, payload) => {
-                        requestAllRankTypes(appid);
+                requestAllRankTypes(appid);
 
-                        if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
-                            console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
-                            return;
-                        }
-                        let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
+                if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
+                    console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
+                    return;
+                }
+                let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
 
-                        ++attempts;
-                        if (!msg.ranking && attempts < 5 && !msg.vac_banned) {
-                            sleep(2000).then(function() {
-                                if (Done) return;
-                                steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
-                            });
-                        } else {
-                            applyHelloResult(msg);
-                        }
+                ++attempts;
+                if (!msg.ranking && attempts < 5 && !msg.vac_banned) {
+                    sleep(2000).then(function() {
+                        if (Done) return;
+                        steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
+                    });
+                } else {
+                    applyHelloResult(msg);
+                }
             };
 
             // Apply a single account profile's level/XP to `data` and recompute
@@ -1395,15 +1432,15 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                     console.log(`[${username}] CMsgGCCStrike15_v2_PlayersProfile proto not available`);
                     return;
                 }
-                        let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
-                        if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
-                            for (let p = 0; p < profileMsg.account_profiles.length; p++) {
-                                const profile = profileMsg.account_profiles[p];
-                                applyProfileLevelAndXp(profile);
-                                applyProfileRankings(profile);
-                            }
-                            console.log(`[${username}] Profile data received: lvl=${data.lvl}, exp=${data.exp}`);
-                        }
+                let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
+                if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
+                    for (let p = 0; p < profileMsg.account_profiles.length; p++) {
+                        const profile = profileMsg.account_profiles[p];
+                        applyProfileLevelAndXp(profile);
+                        applyProfileRankings(profile);
+                    }
+                    console.log(`[${username}] Profile data received: lvl=${data.lvl}, exp=${data.exp}`);
+                }
             };
 
             // ClientGCRankUpdate (msg 9194) rank entries are applied by the
@@ -1415,25 +1452,31 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 console.log(`[${username}] ${label}: ${rankValue}, wins: ${winsValue}`);
             };
 
+            // Finish the check once we have a steamid and at least one rank set.
+            // Exact null/!=null checks preserved from the original inline tail.
+            const maybeFinishAfterRankUpdate = () => {
+                gcRankDataReady = true;
+                if (data.steamid != null &&
+                    (data.rank != null || data.rank_wg != null || data.rank_dz != null || data.rank_premier != null)) {
+                    data.error = null;
+                    finish(data);
+                }
+            };
+
             // GC_MSG.ClientGCRankUpdate (msg 9194)
             const handleClientGCRankUpdate = (appid, payload) => {
-                        let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
-                        if (!msg.rankings || !Array.isArray(msg.rankings)) {
-                            gcRankDataReady = true;
-                            return;
-                        }
-                        for (const ranking of msg.rankings) {
-                            if (!ranking) continue;
-                            applyGcRankUpdateEntry(data, ranking, logRankUpdate);
-                        }
+                let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
+                if (!msg.rankings || !Array.isArray(msg.rankings)) {
+                    gcRankDataReady = true;
+                    return;
+                }
+                for (const ranking of msg.rankings) {
+                    if (!ranking) continue;
+                    applyGcRankUpdateEntry(data, ranking, logRankUpdate);
+                }
 
-                        // If we have steamid and at least one rank has been set, we can finish
-                        gcRankDataReady = true;
-                        if (data.steamid != null &&
-                            (data.rank != null || data.rank_wg != null || data.rank_dz != null || data.rank_premier != null)) {
-                            data.error = null;
-                            finish(data);
-                        }
+                // If we have steamid and at least one rank has been set, we can finish
+                maybeFinishAfterRankUpdate();
             };
 
             // Dispatch table: msgType -> handler. Mirrors the original switch
