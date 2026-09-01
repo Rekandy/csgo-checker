@@ -497,18 +497,30 @@ function renderRowRanks(row, account) {
  * @param {*} account
  */
 function renderRowBanAndActions(row, account) {
-  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+  row.querySelector('.ban').innerText = banCellText(account);
   row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
   row.querySelector('.copy-code').style.display = 'inline-block';
   row.querySelector('.open-pofile').style.display = 'inline-block';
+}
+
+// Ban-cell text for an active penalty: an explicit error wins, otherwise the
+// formatted penalty. Mirrors the renderRowBanAndActions expression exactly.
+function banCellText(account) {
+  return account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+}
+
+// True when the ban cell should be cleared: no active penalty timer, no error,
+// and no meaningful penalty reason. Preserves the original compound condition.
+function shouldClearBanText(account) {
+  return !account.error && (!account.penalty_reason || account.penalty_reason === '?');
 }
 
 function updateBanText(row, account) {
   const banEl = row.querySelector('.ban');
   if (!banEl) return;
   if (account.penalty_seconds > 0) {
-    banEl.innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
-  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
+    banEl.innerText = banCellText(account);
+  } else if (shouldClearBanText(account)) {
     banEl.innerText = '';
   }
 }
