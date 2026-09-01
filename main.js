@@ -10,12 +10,50 @@ const fs = require('fs');
 const path = require('path');
 const { EOL } = require('os');
 const { penalty_reason_string, protoDecode, protoEncode, penalty_reason_permanent } = require('./helpers/util.js');
-const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage } = require('./helpers/gcpd_parser.js');
-const { mergeGcpdMatchmaking, applyGcRanking } = require('./helpers/rankMerge.js');
+const { parseMatchmaking, parseAccountMain, looksLikeGcpdPage, looksLikeLoginPage, looksLikeErrorPage, extractCompetitiveMaps } = require('./helpers/gcpd_parser.js');
+const { mergeGcpdMatchmaking, applyGcRanking, applyGcRankUpdateEntry } = require('./helpers/rankMerge.js');
 const logger = require('./helpers/logger.js');
 const { parseAccountLines } = require('./helpers/importParser.js');
 const { TaskQueue } = require('./helpers/queue.js');
 const { STATUS, statusFromEresult, shouldRetry, backoffDelay } = require('./helpers/checker.js');
+const { xpIntoLevel, xpModuloLevel } = require('./helpers/xp.js');
+
+// --- Pure resolvers for MatchmakingGC2ClientHello fields ---
+// Each function reproduces exactly one of the original nested ternaries from
+// applyHelloResult so that handler reads as straight-line assignments. Behavior
+// is byte-for-behavior identical; no branch is added, removed, or reordered.
+
+// Community ban wins over penalty_reason, which wins over VAC, else 0.
+function resolveHelloPenaltyReason(msg, limitations) {
+    if (limitations.communityBanned) return 'Community ban';
+    if (msg.penalty_reason > 0) return penalty_reason_string(msg.penalty_reason);
+    if (msg.vac_banned) return 'VAC';
+    return 0;
+}
+
+// Permanent bans/vac/community => -1 sentinel; timed penalty => epoch expiry;
+// else 0.
+function resolveHelloPenaltySeconds(msg, limitations) {
+    if (msg.vac_banned || limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason)) {
+        return -1;
+    }
+    if (msg.penalty_seconds > 0) {
+        return Math.floor(Date.now() / 1000) + msg.penalty_seconds;
+    }
+    return 0;
+}
+
+// VAC forces -1; a fresh ranking supplies wins/rank; otherwise 0.
+function resolveHelloWins(msg, haveRanking, ranking) {
+    if (msg.vac_banned) return -1;
+    return haveRanking ? (ranking.wins || 0) : 0;
+}
+
+function resolveHelloRank(msg, haveRanking, ranking) {
+    if (msg.vac_banned) return -1;
+    return haveRanking ? (ranking.rank_id || 0) : 0;
+}
+
 // Исправление загрузки proto-файлов
 let Protos;
 try {
@@ -67,6 +105,76 @@ const GC_MSG = {
 // with exponential backoff + jitter up to CHECK_MAX_ATTEMPTS.
 const CHECK_MAX_ATTEMPTS = 3;
 const DEFAULT_CHECK_CONCURRENCY = 3;
+
+/**
+ * Apply parsed GCPD accountmain data (level, XP, prime) onto the in-flight
+ * check data object and persist level/xp/prime onto the stored account.
+ * XP conversion uses xpIntoLevel from helpers/xp.js, where the single CS2 XP
+ * base constant lives.
+ * @param {object} data In-flight check data (mutated)
+ * @param {string} accountMainHtml Raw GCPD accountmain HTML
+ * @param {string} username Account login
+ * @param {object} db simple-json-db instance
+ * @param {Electron.BrowserWindow|null} win Renderer window or null
+ */
+function applyAccountMainData(data, accountMainHtml, username, db, win) {
+    const accountData = parseAccountMain(accountMainHtml);
+    if (!accountData.ok) return;
+
+    if (accountData.cs2_player_level >= 0) {
+        data.lvl = accountData.cs2_player_level;
+    }
+    if (accountData.cs2_player_xp >= 0) {
+        // Convert raw absolute XP to XP-within-level if it looks like a raw
+        // value; leave in-level values unchanged. The CS2 XP base lives in
+        // exactly one place (helpers/xp.js) so it is never duplicated here.
+        data.exp = xpIntoLevel(accountData.cs2_player_xp);
+    }
+
+    data.prime = (data.lvl > 1) || (data.exp > 0);
+    const account = db.get(username);
+    if (account) {
+        if (data.lvl) account.lvl = data.lvl;
+        if (data.exp) account.exp = data.exp;
+        account.prime = data.prime;
+        db.set(username, account);
+        if (win) win.webContents.send('accounts:updated', { login: username, data: account });
+    }
+}
+
+/**
+ * Apply parsed GCPD matchmaking data (ranks, wins, maps, last game) onto the
+ * in-flight check data object. GCPD is only a gap-filler for ranks; the GC
+ * handlers remain authoritative (see helpers/rankMerge.js).
+ * @param {object} data In-flight check data (mutated)
+ * @param {string} matchmakingHtml Raw GCPD matchmaking HTML
+ * @param {string} username Account login
+ */
+function applyMatchmakingData(data, matchmakingHtml, username) {
+    const mmData = parseMatchmaking(matchmakingHtml);
+    if (mmData.ok) {
+        // GCPD is a GAP-FILLER for ranks: the GC handlers (PlayersProfile
+        // 9128 / ClientGCRankUpdate 9194) are authoritative for rank ids.
+        // mergeGcpdMatchmaking never clobbers a VAC/ban sentinel (-1), only
+        // writes when GCPD actually has signal for the mode, and maps expired
+        // premier -> -1 / expired wingman -> rank 0 with wins retained.
+        // See helpers/rankMerge.js.
+        mergeGcpdMatchmaking(data, mmData);
+        logger.debug('GCPD matchmaking resolved', {
+            account: username,
+            rank_premier: data.rank_premier,
+            wins_premier: data.wins_premier,
+            rank_wg: data.rank_wg,
+            wins_wg: data.wins_wg
+        });
+    }
+
+    data.maps = extractCompetitiveMaps(matchmakingHtml);
+    const lastGameMatch = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT)/.exec(matchmakingHtml);
+    if (lastGameMatch) {
+        data.last_game = new Date(lastGameMatch[1]);
+    }
+}
 
 /**
  * Resolve the configured concurrency for mass checks, defaulting to 3.
@@ -1041,77 +1149,6 @@ function check_account(username, pass, sharedSecret) {
                     }
                 }
 
-function applyAccountMainData(data, accountMainHtml, username, db, win) {
-    const accountData = parseAccountMain(accountMainHtml);
-    if (!accountData.ok) return;
-
-    if (accountData.cs2_player_level >= 0) {
-        data.lvl = accountData.cs2_player_level;
-    }
-    if (accountData.cs2_player_xp >= 0) {
-        const XP_BASE = 327680000;
-        const XP_PER_LEVEL = 5000;
-        if (accountData.cs2_player_xp > XP_BASE) {
-            let into = accountData.cs2_player_xp - XP_BASE;
-            if (into < 0) into = 0;
-            data.exp = into % XP_PER_LEVEL;
-        } else {
-            data.exp = accountData.cs2_player_xp;
-        }
-    }
-
-    data.prime = (data.lvl > 1) || (data.exp > 0);
-    const account = db.get(username);
-    if (account) {
-        if (data.lvl) account.lvl = data.lvl;
-        if (data.exp) account.exp = data.exp;
-        account.prime = data.prime;
-        db.set(username, account);
-        if (win) win.webContents.send('accounts:updated', { login: username, data: account });
-    }
-}
-
-function extractCompetitiveMaps(matchmakingHtml) {
-    const mapsData = {};
-    const mapRows = matchmakingHtml.match(/<tr>[\s\S]*?<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<\/tr>/g);
-    if (mapRows) {
-        mapRows.forEach(function(row) {
-            const mapMatch = /<td>Ranked Competitive<\/td>[\s\S]*?<td>([^<]+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>(\d+)<\/td>[\s\S]*?<td>([^<]*)<\/td>[\s\S]*?<td>(\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d GMT)<\/td>[\s\S]*?<td>(\d+)<\/td>/.exec(row);
-            if (mapMatch) {
-                mapsData[mapMatch[1].trim()] = {
-                    wins: parseInt(mapMatch[2], 10),
-                    ties: parseInt(mapMatch[3], 10),
-                    losses: parseInt(mapMatch[4], 10),
-                    skill_group: mapMatch[5].trim() || null,
-                    last_match: mapMatch[6],
-                    region: parseInt(mapMatch[7], 10)
-                };
-            }
-        });
-    }
-    return mapsData;
-}
-
-function applyMatchmakingData(data, matchmakingHtml, username) {
-    const mmData = parseMatchmaking(matchmakingHtml);
-    if (mmData.ok) {
-        mergeGcpdMatchmaking(data, mmData);
-        logger.debug('GCPD matchmaking resolved', {
-            account: username,
-            rank_premier: data.rank_premier,
-            wins_premier: data.wins_premier,
-            rank_wg: data.rank_wg,
-            wins_wg: data.wins_wg
-        });
-    }
-
-    data.maps = extractCompetitiveMaps(matchmakingHtml);
-    const lastGameMatch = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT)/.exec(matchmakingHtml);
-    if (lastGameMatch) {
-        data.last_game = new Date(lastGameMatch[1]);
-    }
-}
-
                 // 2. Account main page (for level and XP).
                 async function fetchAccountMain() {
                     const accountMainHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}/gcpd/730?tab=accountmain`);
@@ -1271,65 +1308,121 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 }
             };
 
+            // Request all rank types plus the comprehensive player profile.
+            // Extracted from the MatchmakingGC2ClientHello handler unchanged.
+            const requestAllRankTypes = (appid) => {
+                let rankUpdateMsg = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, {
+                    rankings: [
+                        { rank_type_id: 6 },
+                        { rank_type_id: 7 },
+                        { rank_type_id: 10 },
+                        { rank_type_id: 11 }
+                    ]
+                });
+                steamClient.sendToGC(appid, GC_MSG.ClientGCRankUpdate, {}, rankUpdateMsg);
+
+                // Also request player profile for comprehensive rank data
+                if (Protos.csgo.CMsgGCCStrike15_v2_ClientRequestPlayersProfile) {
+                    let profileReqMsg = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientRequestPlayersProfile, {
+                        account_id: steamClient.steamID.accountid,
+                        request_level: 32
+                    });
+                    steamClient.sendToGC(appid, GC_MSG.RequestPlayersProfile, {}, profileReqMsg);
+                }
+            };
+
+            // Apply a resolved MatchmakingGC2ClientHello message to `data`.
+            // Every field/ternary is byte-for-behavior identical to the
+            // original else-branch; the vac_banned/-1 and communityBanned
+            // branches and the prime-status db write are preserved exactly.
+            const applyHelloResult = (msg) => {
+                // Guard every field: protoDecode may return {} and
+                // msg.ranking may be absent when attempts hit the cap.
+                const limitations = steamClient.limitations || {};
+                const ranking = msg.ranking || {};
+                const haveRanking = attempts < 5 && msg.ranking != null;
+                data.penalty_reason = resolveHelloPenaltyReason(msg, limitations);
+                data.penalty_seconds = resolveHelloPenaltySeconds(msg, limitations);
+                data.wins = resolveHelloWins(msg, haveRanking, ranking);
+                data.rank = resolveHelloRank(msg, haveRanking, ranking);
+                data.name = (steamClient.accountInfo && steamClient.accountInfo.name) || data.name || username;
+                data.lvl = msg.player_level || data.lvl;
+                data.steamid = steamClient.steamID.getSteamID64();
+                data.error = null;
+
+                // Final prime determination based on level/xp heuristic
+                data.prime = (data.lvl > 1) || (data.exp > 0);
+
+                // Save prime status
+                let account = db.get(username);
+                if (account) {
+                    account.prime = data.prime;
+                    db.set(username, account);
+                }
+            };
+
             // GC_MSG.MatchmakingGC2ClientHello
             const handleMatchmakingHello = (appid, payload) => {
-                        // Request all rank types
-                        let rankUpdateMsg = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, {
-                            rankings: [
-                                { rank_type_id: 6 },
-                                { rank_type_id: 7 },
-                                { rank_type_id: 10 },
-                                { rank_type_id: 11 }
-                            ]
-                        });
-                        steamClient.sendToGC(appid, GC_MSG.ClientGCRankUpdate, {}, rankUpdateMsg);
+                requestAllRankTypes(appid);
 
-                        // Also request player profile for comprehensive rank data
-                        if (Protos.csgo.CMsgGCCStrike15_v2_ClientRequestPlayersProfile) {
-                            let profileReqMsg = protoEncode(Protos.csgo.CMsgGCCStrike15_v2_ClientRequestPlayersProfile, {
-                                account_id: steamClient.steamID.accountid,
-                                request_level: 32
-                            });
-                            steamClient.sendToGC(appid, GC_MSG.RequestPlayersProfile, {}, profileReqMsg);
-                        }
+                if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
+                    console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
+                    return;
+                }
+                let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
 
-                        if (!Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello) {
-                            console.error('Proto type CMsgGCCStrike15_v2_MatchmakingGC2ClientHello not loaded');
-                            return;
-                        }
-                        let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_MatchmakingGC2ClientHello, payload);
+                ++attempts;
+                if (!msg.ranking && attempts < 5 && !msg.vac_banned) {
+                    sleep(2000).then(function() {
+                        if (Done) return;
+                        steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
+                    });
+                } else {
+                    applyHelloResult(msg);
+                }
+            };
 
-                        ++attempts;
-                        if (!msg.ranking && attempts < 5 && !msg.vac_banned) {
-                            sleep(2000).then(function() {
-                                if (Done) return;
-                                steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
-                            });
-                        } else {
-                            // Guard every field: protoDecode may return {} and
-                            // msg.ranking may be absent when attempts hit the cap.
-                            const limitations = steamClient.limitations || {};
-                            const ranking = msg.ranking || {};
-                            const haveRanking = attempts < 5 && msg.ranking != null;
-                            data.penalty_reason = limitations.communityBanned ? 'Community ban' : msg.penalty_reason > 0 ? penalty_reason_string(msg.penalty_reason) : msg.vac_banned ? 'VAC' : 0;
-                            data.penalty_seconds = msg.vac_banned || limitations.communityBanned || penalty_reason_permanent(msg.penalty_reason) ? -1 : msg.penalty_seconds > 0 ? (Math.floor(Date.now() / 1000) + msg.penalty_seconds) : 0;
-                            data.wins = msg.vac_banned ? -1 : haveRanking ? (ranking.wins || 0) : 0;
-                            data.rank = msg.vac_banned ? -1 : haveRanking ? (ranking.rank_id || 0) : 0;
-                            data.name = (steamClient.accountInfo && steamClient.accountInfo.name) || data.name || username;
-                            data.lvl = msg.player_level || data.lvl;
-                            data.steamid = steamClient.steamID.getSteamID64();
-                            data.error = null;
+            // Apply a single account profile's level/XP to `data` and recompute
+            // the prime heuristic. Extracted from handlePlayersProfile unchanged.
+            const applyProfileLevelAndXp = (profile) => {
+                // Extract player level and XP from profile
+                if (profile.player_level && profile.player_level > 0) {
+                    data.lvl = profile.player_level;
+                }
+                if (profile.player_cur_xp && profile.player_cur_xp > 0) {
+                    // Convert raw absolute XP to XP-within-level. This path
+                    // always subtracts the base (no guard), matching the
+                    // original PlayersProfile behavior.
+                    data.exp = xpModuloLevel(profile.player_cur_xp);
+                }
+                // Final prime determination based on level/xp heuristic
+                data.prime = (data.lvl > 1) || (data.exp > 0);
+            };
 
-                            // Final prime determination based on level/xp heuristic
-                            data.prime = (data.lvl > 1) || (data.exp > 0);
-
-                            // Save prime status
-                            let account = db.get(username);
-                            if (account) {
-                                account.prime = data.prime;
-                                db.set(username, account);
-                            }
-                        }
+            // Apply a single account profile's rankings to `data`.
+            //
+            // A ranking ENTRY being present for a rank_type_id is the
+            // authoritative signal that CS2 reported that mode. protobufjs
+            // decodes unset numeric fields to 0 (defaults:true), so an EXPIRED
+            // rank legitimately arrives as rank_id === 0. applyGcRanking therefore
+            // assigns unconditionally when the entry exists (mirroring the
+            // ClientGCRankUpdate handler) rather than using truthiness guards,
+            // which would silently drop the expired state (rank 0) and skip
+            // writing wins === 0. It never overwrites a VAC/ban sentinel (-1)
+            // that an earlier handler established.
+            const applyProfileRankings = (profile) => {
+                if (Array.isArray(profile.rankings) && profile.rankings.length > 0) {
+                    for (let r = 0; r < profile.rankings.length; r++) {
+                        applyGcRanking(data, profile.rankings[r]);
+                    }
+                    logger.debug('PlayersProfile ranks resolved', {
+                        account: username,
+                        rank: data.rank, wins: data.wins,
+                        rank_wg: data.rank_wg, wins_wg: data.wins_wg,
+                        rank_dz: data.rank_dz, wins_dz: data.wins_dz,
+                        rank_premier: data.rank_premier, wins_premier: data.wins_premier
+                    });
+                }
             };
 
             // GC_MSG.PlayersProfile (msg 9128)
@@ -1339,123 +1432,51 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                     console.log(`[${username}] CMsgGCCStrike15_v2_PlayersProfile proto not available`);
                     return;
                 }
-                        let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
-                        if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
-                            for (let p = 0; p < profileMsg.account_profiles.length; p++) {
-                                const profile = profileMsg.account_profiles[p];
-                                // Extract player level and XP from profile
-                                if (profile.player_level && profile.player_level > 0) {
-                                    data.lvl = profile.player_level;
-                                }
-                                if (profile.player_cur_xp && profile.player_cur_xp > 0) {
-                                    // Convert raw absolute XP to XP-within-level.
-                                    // 327680000 is the intentional CS2 XP base constant (well below
-                                    // Number.MAX_SAFE_INTEGER); it must not be altered or rounded.
-                                    const XP_BASE = 327680000;
-                                    const XP_PER_LEVEL = 5000;
-                                    let into = profile.player_cur_xp - XP_BASE;
-                                    if (into < 0) into = 0;
-                                    data.exp = into % XP_PER_LEVEL;
-                                }
-                                // Final prime determination based on level/xp heuristic
-                                data.prime = (data.lvl > 1) || (data.exp > 0);
-                                // Extract rankings from profile.
-                                //
-                                // A ranking ENTRY being present for a rank_type_id
-                                // is the authoritative signal that CS2 reported
-                                // that mode. protobufjs decodes unset numeric
-                                // fields to 0 (defaults:true), so an EXPIRED rank
-                                // legitimately arrives as rank_id === 0. We must
-                                // therefore assign unconditionally when the entry
-                                // exists (mirroring the ClientGCRankUpdate handler)
-                                // rather than using truthiness guards, which would
-                                // silently drop the expired state (rank 0) and
-                                // skip writing wins === 0.
-                                //
-                                // We never overwrite a VAC/ban sentinel (-1) that
-                                // an earlier handler established.
-                                if (Array.isArray(profile.rankings) && profile.rankings.length > 0) {
-                                    for (let r = 0; r < profile.rankings.length; r++) {
-                                        applyGcRanking(data, profile.rankings[r]);
-                                    }
-                                    logger.debug('PlayersProfile ranks resolved', {
-                                        account: username,
-                                        rank: data.rank, wins: data.wins,
-                                        rank_wg: data.rank_wg, wins_wg: data.wins_wg,
-                                        rank_dz: data.rank_dz, wins_dz: data.wins_dz,
-                                        rank_premier: data.rank_premier, wins_premier: data.wins_premier
-                                    });
-                                }
-                            }
-                            console.log(`[${username}] Profile data received: lvl=${data.lvl}, exp=${data.exp}`);
-                        }
+                let profileMsg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_PlayersProfile, payload);
+                if (profileMsg.account_profiles && profileMsg.account_profiles.length > 0) {
+                    for (let p = 0; p < profileMsg.account_profiles.length; p++) {
+                        const profile = profileMsg.account_profiles[p];
+                        applyProfileLevelAndXp(profile);
+                        applyProfileRankings(profile);
+                    }
+                    console.log(`[${username}] Profile data received: lvl=${data.lvl}, exp=${data.exp}`);
+                }
+            };
+
+            // ClientGCRankUpdate (msg 9194) rank entries are applied by the
+            // data-driven applyGcRankUpdateEntry helper in helpers/rankMerge.js
+            // (GC_RANK_UPDATE_TYPES table + VAC cascade + premier expired guard).
+            // The log callback reproduces the original per-entry console.log
+            // placement: label after assignment, before the VAC cascade.
+            const logRankUpdate = (label, rankValue, winsValue) => {
+                console.log(`[${username}] ${label}: ${rankValue}, wins: ${winsValue}`);
+            };
+
+            // Finish the check once we have a steamid and at least one rank set.
+            // Exact null/!=null checks preserved from the original inline tail.
+            const maybeFinishAfterRankUpdate = () => {
+                gcRankDataReady = true;
+                if (data.steamid != null &&
+                    (data.rank != null || data.rank_wg != null || data.rank_dz != null || data.rank_premier != null)) {
+                    data.error = null;
+                    finish(data);
+                }
             };
 
             // GC_MSG.ClientGCRankUpdate (msg 9194)
             const handleClientGCRankUpdate = (appid, payload) => {
-                        let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
-                        if (!msg.rankings || !Array.isArray(msg.rankings)) {
-                            gcRankDataReady = true;
-                            return;
-                        }
-                        for (const ranking of msg.rankings) {
-                            if (!ranking) continue;
-                            // Assign UNCONDITIONALLY when a ranking entry exists:
-                            // an EXPIRED rank arrives as rank_id 0 (falsy) with
-                            // wins > 0, and the frontend reads `rank==0 && wins>=10`
-                            // as expired for mm/wg/dz. Normalize undefined to 0 so
-                            // we never write undefined into the data object.
-                            const rankId = ranking.rank_id ?? 0;
-                            const rankWins = ranking.wins ?? 0;
-                            if (ranking.rank_type_id == 6) { // competitive
-                                data.wins = rankWins;
-                                data.rank = rankId;
-                                console.log(`[${username}] Competitive rank: ${data.rank}, wins: ${data.wins}`);
-                            }
-                            if (ranking.rank_type_id == 7) { // wingman
-                                data.wins_wg = rankWins;
-                                data.rank_wg = rankId;
-                                console.log(`[${username}] Wingman rank: ${data.rank_wg}, wins: ${data.wins_wg}`);
-                                if (data.wins === -1) { // vac banned
-                                    data.wins_wg = -1;
-                                    data.rank_wg = -1;
-                                }
-                            }
-                            if (ranking.rank_type_id == 10) { // dangerzone
-                                data.wins_dz = rankWins;
-                                data.rank_dz = rankId;
-                                console.log(`[${username}] Danger Zone rank: ${data.rank_dz}, wins: ${data.wins_dz}`);
-                                if (data.wins === -1) { // vac banned
-                                    data.wins_dz = -1;
-                                    data.rank_dz = -1;
-                                }
-                            }
-                            if (ranking.rank_type_id == 11) { // premier
-                                // For premier, rank_id carries the RATING itself.
-                                // Rating 0 => unranked/none (frontend shows
-                                // premier_none). The expired premier sentinel (-1)
-                                // is derived from the GCPD path, which has the wins
-                                // signal needed to tell expired from never-ranked;
-                                // do not clobber an expired -1 already set there.
-                                data.wins_premier = rankWins;
-                                if (data.rank_premier !== -1) {
-                                    data.rank_premier = rankId;
-                                }
-                                console.log(`[${username}] Premier rank: ${data.rank_premier}, wins: ${data.wins_premier}`);
-                                if (data.wins === -1) { // vac banned
-                                    data.wins_premier = -1;
-                                    data.rank_premier = -1;
-                                }
-                            }
-                        }
+                let msg = protoDecode(Protos.csgo.CMsgGCCStrike15_v2_ClientGCRankUpdate, payload);
+                if (!msg.rankings || !Array.isArray(msg.rankings)) {
+                    gcRankDataReady = true;
+                    return;
+                }
+                for (const ranking of msg.rankings) {
+                    if (!ranking) continue;
+                    applyGcRankUpdateEntry(data, ranking, logRankUpdate);
+                }
 
-                        // If we have steamid and at least one rank has been set, we can finish
-                        gcRankDataReady = true;
-                        if (data.steamid != null &&
-                            (data.rank != null || data.rank_wg != null || data.rank_dz != null || data.rank_premier != null)) {
-                            data.error = null;
-                            finish(data);
-                        }
+                // If we have steamid and at least one rank has been set, we can finish
+                maybeFinishAfterRankUpdate();
             };
 
             // Dispatch table: msgType -> handler. Mirrors the original switch

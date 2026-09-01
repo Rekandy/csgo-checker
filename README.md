@@ -1,4 +1,6 @@
-# CS2 account checker <img width="100" align="right" alt="icon" src="https://github.com/dumbasPL/csgo-checker/raw/master/build/icon.ico" />
+<img width="100" align="right" alt="icon" src="https://github.com/dumbasPL/csgo-checker/raw/master/build/icon.ico" />
+
+# CS2 account checker
 
 > [!NOTE]  
 > Updated for **CS2** (Counter-Strike 2, formerly CS:GO). The Game Coordinator

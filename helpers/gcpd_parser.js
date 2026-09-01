@@ -169,44 +169,98 @@ function findColumn(header, needles) {
 }
 
 /**
- * Helper to process a single row in the cooldown table.
+ * Detect a permanent-cooldown row: a non-timestamp first cell paired with a
+ * cooldown level of at least 1 (e.g. "Permanent", "7").
+ * @param {string[]} row - parsed cooldown row cells
+ * @returns {boolean}
  */
-function processCooldownRow(row, result, nowSeconds) {
-  if (!row || row.length === 0) return;
+function isPermanentCooldownRow(row) {
+  const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
+  return Boolean(row[0]) && hasLevel;
+}
+
+/**
+ * Decide whether a future cooldown timestamp is the new earliest cooldown to
+ * record on `result`.
+ * @param {number} ts - candidate cooldown timestamp (Unix seconds)
+ * @param {object} result - running matchmaking result
+ * @param {number} nowSeconds - current Unix time in seconds
+ * @returns {boolean}
+ */
+function isEarlierFutureCooldown(ts, result, nowSeconds) {
+  if (ts <= nowSeconds) return false;
+  return result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix;
+}
+
+/**
+ * Apply a single cooldown row to the running matchmaking `result`. Mirrors the
+ * original inline behavior exactly: permanent indicators win, otherwise the
+ * earliest future timestamp is tracked.
+ * @param {string[]} row - parsed cooldown row cells
+ * @param {object} result - matchmaking result object (mutated in place)
+ * @param {number} nowSeconds - current Unix time in seconds
+ */
+function applyCooldownRow(row, result, nowSeconds) {
   const ts = parseGcpdTimestamp(row[0]);
   if (ts === 0) {
-    const hasLevel = row.length > 1 && toInt(row[1], 0) >= 1;
-    if (row[0] && hasLevel) {
+    // Non-timestamp row: check for permanent cooldown indicator
+    if (isPermanentCooldownRow(row)) {
       result.cooldown_expires_unix = COOLDOWN_NEVER;
       result.cooldown_reason = 'Competitive cooldown';
     }
     return;
   }
+  // Skip if already permanently banned
   if (result.cooldown_expires_unix === COOLDOWN_NEVER) return;
-  if (ts > nowSeconds && (result.cooldown_expires_unix === 0 || ts < result.cooldown_expires_unix)) {
+  // Only track future cooldowns, pick the earliest
+  if (isEarlierFutureCooldown(ts, result, nowSeconds)) {
     result.cooldown_expires_unix = ts;
     result.cooldown_reason = 'Competitive cooldown';
   }
 }
 
 /**
- * Parse a cooldown table into the running matchmaking `result`.
+ * Parse a cooldown table into the running matchmaking `result`. Tracks the
+ * earliest future cooldown and a permanent (COOLDOWN_NEVER) cooldown, matching
+ * the original inline behavior exactly.
+ * @param {Array<Array<string>>} tbl - parsed cooldown table (rows of cells)
+ * @param {object} result - matchmaking result object (mutated in place)
+ * @param {number} nowSeconds - current Unix time in seconds
  */
 function parseCooldownTable(tbl, result, nowSeconds) {
   for (let i = 1; i < tbl.length; i++) {
-    processCooldownRow(tbl[i], result, nowSeconds);
+    const row = tbl[i];
+    if (row.length === 0) continue;
+    applyCooldownRow(row, result, nowSeconds);
   }
 }
 
 /**
- * Helper to process a single row in the matchmaking mode table.
+ * Parse a cooldown table into the running matchmaking `result`.
  */
-function processModeRow(row, skillCol, winsCol, result) {
-  if (!row || row.length === 0) return;
-  const skill = (skillCol >= 0 && row.length > skillCol) ? toInt(row[skillCol], -1) : -1;
-  const wins = (winsCol >= 0 && row.length > winsCol) ? toInt(row[winsCol], -1) : -1;
-  if (skill < 0 && wins < 0) return;
+/**
+ * Extract an integer value from a row at the given column, returning -1 when
+ * the column is absent (col < 0) or the row is too short. Matches the original
+ * inline guard exactly.
+ * @param {string[]} row - parsed row cells
+ * @param {number} col - column index (or < 0 when the column was not found)
+ * @returns {number} parsed value, or -1 when unavailable
+ */
+function cellIntAt(row, col) {
+  return (col >= 0 && row.length > col) ? toInt(row[col], -1) : -1;
+}
 
+/**
+ * Apply a parsed matchmaking-mode row to the running `result`. The row is
+ * matched to Premier or Wingman by its first cell; skill/wins are written only
+ * when their column was present (value >= 0), which preserves the expired /
+ * unranked (value 0) case exactly.
+ * @param {string[]} row - parsed matchmaking-mode row cells
+ * @param {number} skill - parsed skill/rating value, or -1 when unavailable
+ * @param {number} wins - parsed wins value, or -1 when unavailable
+ * @param {object} result - matchmaking result object (mutated in place)
+ */
+function applyMatchmakingModeRow(row, skill, wins, result) {
   if (containsCI(row[0], 'Premier')) {
     result.premier_present = true;
     if (skill >= 0) result.premier_rating = skill;
@@ -218,9 +272,6 @@ function processModeRow(row, skillCol, winsCol, result) {
   }
 }
 
-/**
- * Parse a matchmaking-mode table into the running matchmaking `result`.
- */
 function parseMatchmakingModeTable(tbl, result) {
   const header = tbl[0];
   if (headerContainsAnyCell(tbl, KEYWORDS_MAP)) return;
@@ -230,10 +281,31 @@ function parseMatchmakingModeTable(tbl, result) {
   if (skillCol < 0 && winsCol < 0) return;
 
   for (let i = 1; i < tbl.length; i++) {
-    processModeRow(tbl[i], skillCol, winsCol, result);
+    const row = tbl[i];
+    if (row.length === 0) continue;
+    const skill = cellIntAt(row, skillCol);
+    const wins = cellIntAt(row, winsCol);
+    if (skill < 0 && wins < 0) continue;
+
+    // The row exists for this mode: mark it present so the caller can tell
+    // "expired/unranked (rating 0)" apart from "no data". Record a parsed
+    // rating/rank of 0 too (skill === 0), which is exactly the expired /
+    // unranked case - only skip writing when the skill column was absent
+    // (skill < 0). Wins are written whenever the column was present
+    // (wins >= 0), including 0.
+    applyMatchmakingModeRow(row, skill, wins, result);
   }
 }
 
+/**
+ * Dispatch a single parsed GCPD table to the appropriate parser based on its
+ * header row. Extracted so the parseMatchmaking loop body stays flat and
+ * within complexity limits. Cooldown and matchmaking-mode tables are the only
+ * recognized shapes; anything else is ignored.
+ * @param {Array<Array<string>>} tbl - parsed table (rows of cells)
+ * @param {object} result - matchmaking result object (mutated in place)
+ * @param {number} nowSeconds - current Unix time in seconds
+ */
 function processSingleTable(tbl, result, nowSeconds) {
   if (tbl.length < 2) return;
   const header = tbl[0];
@@ -423,11 +495,65 @@ function looksLikeErrorPage(html) {
          containsCI(html, 'error_box_top');
 }
 
+/**
+ * Extract per-map "Ranked Competitive" stats from a GCPD matchmaking page.
+ *
+ * The main parser does not cover per-map data, so this uses the same regex
+ * shape the main process previously ran inline. Returns a map keyed by the
+ * (trimmed) map name; an empty object when no rows are present. Behavior is
+ * byte-identical to the original inline extraction.
+ * @param {string} html - Raw GCPD matchmaking HTML
+ * @returns {Object<string, {wins:number, ties:number, losses:number, skill_group:(string|null), last_match:string, region:number}>}
+ */
+// Shared body of the competitive-map row regex. The /g scan wraps it in
+// <tr>...</tr> to slice whole rows out of the page; the per-row exec matches
+// the same capture groups inside a single sliced row. Keeping one source here
+// guarantees the two stay byte-identical.
+const COMPETITIVE_MAP_ROW_SOURCE = '<td>Ranked Competitive<\\/td>[\\s\\S]*?<td>([^<]+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>[\\s\\S]*?<td>([^<]*)<\\/td>[\\s\\S]*?<td>(\\d\\d\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d GMT)<\\/td>[\\s\\S]*?<td>(\\d+)<\\/td>';
+
+/**
+ * Parse a single sliced competitive-map row into its structured record.
+ * Returns null when the row does not match. Field extraction (trims, parseInt
+ * radix 10, null skill_group) is byte-identical to the original inline code.
+ * @param {string} row - one <tr>...</tr> slice
+ * @returns {?{name:string, wins:number, ties:number, losses:number, skill_group:(string|null), last_match:string, region:number}}
+ */
+function parseCompetitiveMapRow(row) {
+  const m = new RegExp(COMPETITIVE_MAP_ROW_SOURCE).exec(row);
+  if (!m) return null;
+  return {
+    name: m[1].trim(),
+    wins: parseInt(m[2], 10),
+    ties: parseInt(m[3], 10),
+    losses: parseInt(m[4], 10),
+    skill_group: m[5].trim() || null,
+    last_match: m[6],
+    region: parseInt(m[7], 10)
+  };
+}
+
+function extractCompetitiveMaps(html) {
+  const mapsData = {};
+  if (!html) return mapsData;
+  const mapRows = html.match(new RegExp('<tr>[\\s\\S]*?' + COMPETITIVE_MAP_ROW_SOURCE + '[\\s\\S]*?<\\/tr>', 'g'));
+  if (mapRows) {
+    mapRows.forEach(function(row) {
+      const parsed = parseCompetitiveMapRow(row);
+      if (parsed) {
+        const { name, ...record } = parsed;
+        mapsData[name] = record;
+      }
+    });
+  }
+  return mapsData;
+}
+
 module.exports = {
   parseMatchmaking,
   parseAccountMain,
   looksLikeGcpdPage,
   looksLikeLoginPage,
   looksLikeErrorPage,
+  extractCompetitiveMaps,
   COOLDOWN_NEVER
 };

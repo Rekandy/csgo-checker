@@ -10,285 +10,12 @@ let account_cache = {};
 let tags_cache = {};
 let encrypted = false;
 
-// Image-name prefixes per rank type (under img/skillgroups/).
-const RANK_IMAGE_PREFIXES = {
-  mm: 'skillgroup',
-  wg: 'wingman',
-  dz: 'dangerzone',
-  premier: 'premier'
-};
-
-// Premier rating buckets, in order. Each entry maps a [min, max] inclusive
-// rating range to the image suffix number and the label range shown in the
-// tooltip. max === Infinity is the open-ended top bucket (30000+).
-const PREMIER_BUCKETS = [
-  { min: 1, max: 4999, image: '1', label: '1-4999' },
-  { min: 5000, max: 9999, image: '2', label: '5000-9999' },
-  { min: 10000, max: 14999, image: '3', label: '10000-14999' },
-  { min: 15000, max: 19999, image: '4', label: '15000-19999' },
-  { min: 20000, max: 24999, image: '5', label: '20000-24999' },
-  { min: 25000, max: 29999, image: '6', label: '25000-29999' },
-  { min: 30000, max: Infinity, image: '7', label: '30000+' }
-];
-
-/**
- * Find the premier bucket for a rating, or null if the rating is not a positive
- * in-range value.
- * @param {Number} rank premier rating
- * @returns {{min:Number, max:Number, image:String, label:String}|null}
- */
-function findPremierBucket(rank) {
-  return PREMIER_BUCKETS.find(b => rank >= b.min && rank <= b.max) || null;
-}
-
-/**
- * True when a premier rating value represents the unranked/none state (empty
- * cell, null/undefined, or 0).
- * @param {Number} rank
- * @returns {Boolean}
- */
-function isPremierUnranked(rank) {
-  return rank === null || rank === undefined || rank === 0 || rank === '';
-}
-
-/**
- * Get correct image name for given rank
- * @param {Number} rank ranking
- * @param {Number} wins number of wins
- * @param {'mm' | 'wg' | 'dz' | 'premier'} type rank type 
- * @returns {String}
- */
-function getRankImage(rank, wins, type) {
-  const prefix = 'img/skillgroups/' + (RANK_IMAGE_PREFIXES[type] ?? '');
-
-  if (type === 'premier') {
-    // Для Premier используем ранги на основе рейтинга
-
-    // Проверяем на истекший ранг (-1)
-    if (rank === -1) {
-      console.log('Premier expired rank detected (-1)');
-      return prefix + '_expired.svg'; // Истекший ранг
-    }
-    // Проверяем на пустую ячейку таблицы или неранжированный статус
-    if (isPremierUnranked(rank)) {
-      return prefix + '_none.svg'; // Неранжированный
-    }
-    const bucket = findPremierBucket(rank);
-    if (bucket) {
-      return prefix + bucket.image + '.svg';
-    }
-    return undefined;
-  }
-
-  // Для других режимов используем стандартную логику
-  if (rank <= 0) {
-    rank = 0;
-  }
-  // rank may arrive as a number or a numeric string from stored data; normalize
-  // before the zero check so expired-rank detection (rank 0 with >= 10 wins) holds.
-  if (Number(rank) === 0 && wins >= 10) {
-    return prefix + '_expired.svg';
-  }
-  return prefix + rank + '.svg';
-}
-
-/**
- * Get rank name for given rank id
- * @param {Number} rank ranking
- * @param {Number} wins number of wins
- * @returns {String} rank name
- */
-/**
- * Get rank name for given rank id
- * @param {Number} rank ranking
- * @param {Number} wins number of wins
- * @param {'mm' | 'wg' | 'dz' | 'premier'} type rank type (optional)
- * @returns {String} rank name
- */
-// Competitive (mm) skill-group names keyed by rank id.
-const MM_RANK_NAMES = {
-  1: "Silver 1",
-  2: "Silver 2",
-  3: "Silver 3",
-  4: "Silver 4",
-  5: "Silver Elite",
-  6: "Silver Elite Master",
-  7: "Gold Nova 1",
-  8: "Gold Nova 2",
-  9: "Gold Nova 3",
-  10: "Gold Nova Master",
-  11: "Master Guardian 1",
-  12: "Master Guardian 2",
-  13: "Master Guardian Elite",
-  14: "Distinguished Master Guardian",
-  15: "Legendary Eagle",
-  16: "Legendary Eagle Master",
-  17: "Supreme Master First Class",
-  18: "Global Elite CS GO"
-};
-
-/**
- * Build the Premier rank name for a rating.
- * @param {Number} rank premier rating
- * @returns {String}
- */
-function getPremierRankName(rank) {
-  // Проверяем на истекший ранг (-1)
-  if (rank === -1) {
-    return "Premier Rating: Expired";
-  }
-  // Проверяем на пустую ячейку таблицы или неранжированный статус
-  if (isPremierUnranked(rank)) {
-    return "Unranked";
-  }
-  const bucket = findPremierBucket(rank);
-  if (bucket) {
-    return `Premier Rating: ${rank} (${bucket.label})`;
-  }
-  return `Premier Rating: ${rank}`;
-}
-
-function getRankName(rank, wins, type) {
-  // Если это Premier ранг, используем специальную логику
-  if (type === 'premier') {
-    return getPremierRankName(rank);
-  }
-
-  // Для других режимов используем стандартную логику
-  if (rank <= 0) {
-    rank = 0;
-  }
-  if (rank === 0) {
-    return wins >= 10 ? "Expired" : "Unranked";
-  }
-  // Match the original strict `switch (rank)` semantics: only an exact numeric
-  // rank id maps to a name; anything else (incl. numeric strings) is Unknown.
-  return Object.prototype.hasOwnProperty.call(MM_RANK_NAMES, rank) && typeof rank === 'number'
-    ? MM_RANK_NAMES[rank]
-    : `Unknown(${rank})`;
-}
-
-/**
- * Get danger zone rank name for given rank id
- * @param {Number} rank ranking
- * @param {Number} wins number of wins
- * @returns {String} rank name
- */
-// Danger Zone rank names keyed by rank id.
-const DZ_RANK_NAMES = {
-  1: "Lab Rat I",
-  2: "Lab Rat II",
-  3: "Sprinting Hare I",
-  4: "Sprinting Hare II",
-  5: "Wild Scout I",
-  6: "Wild Scout II",
-  7: "Wild Scout Elite",
-  8: "Hunter Fox I",
-  9: "Hunter Fox II",
-  10: "Hunter Fox Elite",
-  11: "Timber Wolf",
-  12: "Ember Wolf",
-  13: "Wildfire Wolf",
-  14: "The Howling Alpha"
-};
-
- function getDZRankName(rank, wins) {
-  if (rank <= 0) {
-    rank = 0;
-  }
-  if (rank === 0) {
-    return wins >= 1 ? "Expired or Unranked" : "Unranked";
-  }
-  // Match the original strict `switch (rank)` semantics.
-  return Object.prototype.hasOwnProperty.call(DZ_RANK_NAMES, rank) && typeof rank === 'number'
-    ? DZ_RANK_NAMES[rank]
-    : `Unknown(${rank})`;
-}
-
-/**
- * Format countdown string
- * @param {Number} seconds seconds remaining
- * @returns formatted string
- */
-function countdown(seconds) {
-  const d = Math.floor(seconds / (3600 * 24));
-  seconds -= d * 3600 * 24;
-  const h = Math.floor(seconds / 3600);
-  seconds -= h * 3600;
-  const m = Math.floor(seconds / 60);
-  seconds -= m * 60;
-  const tmp = [];
-  (d) && tmp.push(d + 'd');
-  (d || h) && tmp.push(h + 'h');
-  (d || h || m) && tmp.push(m + 'm');
-  tmp.push(seconds + 's');
-  return tmp.join(' ');
-}
-
-/**
- * Format account penalty
- * @param {String | Number} reason penalty reason
- * @param {Number} seconds Seconds left
- * @returns {String}
- */
-function formatPenalty(reason, seconds) {
-  if (reason === 0) {
-    return '-';
-  }
-  if (seconds == -1) {
-    return reason;
-  }
-  if (Date.now() > seconds * 1000 || new Date(seconds * 1000).getFullYear() - new Date().getFullYear() > 100) {
-    return reason + ' - Expired';
-  }
-  return reason + ' - ' + countdown(seconds - Math.floor(Date.now() / 1000));
-}
-
-/**
- * Formats rank expire time from last played match date
- * @param {Date} time
- * @returns {String}
- */
-function formatExpireTime(time) {
-  console.log('Original date:', time);
-  
-  // Проверяем, что дата валидна
-  if (!(time instanceof Date && !isNaN(time))) {
-    console.error('Invalid date provided to formatExpireTime');
-    return 'Invalid date';
-  }
-  
-  time = new Date(time.getTime());
-  console.log('Converted date:', time);
-  //https://github.com/dumbasPL/csgo-checker/issues/3#issuecomment-827474759
-  //this is untested yet, i'm trusting what this guy says.
-  time.setDate(time.getDate() + 30);
-  console.log('Expire date:', time);
-  
-  // Форматируем дату вручную для большей надежности
-  let day = time.getDate().toString().padStart(2, '0');
-  let month = (time.getMonth() + 1).toString().padStart(2, '0');
-  let year = time.getFullYear();
-  let hours = time.getHours().toString().padStart(2, '0');
-  let minutes = time.getMinutes().toString().padStart(2, '0');
-  
-  return `${day}.${month}.${year} ${hours}:${minutes}`;
-}
-
-// credit: https://stackoverflow.com/a/11868398/5861427
-/**
- * Calculates the text color for a given background color based on brightness
- * @param {String} color the background color
- * @returns {'black' | 'white'} text color
- */
-function getContrastYIQ(color) {
-  color = color.trim().replace('#', '');
-  var r = parseInt(color.substr(0, 2), 16);
-  var g = parseInt(color.substr(2, 2), 16);
-  var b = parseInt(color.substr(4, 2), 16);
-  var yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
-  return (yiq >= 128) ? 'black' : 'white';
-}
+// The pure rank/format helpers (RANK_IMAGE_PREFIXES, PREMIER_BUCKETS,
+// findPremierBucket, isPremierUnranked, getRankImage, MM_RANK_NAMES,
+// getPremierRankName, getRankName, DZ_RANK_NAMES, getDZRankName, countdown,
+// formatPenalty, formatExpireTime, getContrastYIQ) live in html/js/rankFormat.js,
+// which is loaded as a <script> BEFORE this file in html/index.html. They are
+// renderer globals used unchanged throughout front.js.
 
 /**
  * Create a pill badge
@@ -368,45 +95,68 @@ function createTagEdit(name, color = '#000000') {
  * @param {*} account account object
  * @returns {Boolean} matches? 
  */
-function getAccountSearchStrings(login, account) {
-  const penalty = formatPenalty(account.penalty_reason || '?', account.penalty_seconds != null ? account.penalty_seconds : -1);
-  const mmRank = getRankName(account.rank || 0, account.wins || 0);
-  const wgRank = getRankName(account.rank_wg || 0, account.wins_wg || 0);
-  const dzRank = getDZRankName(account.rank_dz || 0, account.wins_dz || 0);
-
-  const list = [
-    login,
-    account.name,
-    account.prime ? 'prime' : null,
-    account.error,
-    penalty,
-    account.steamid ? String(account.steamid) : null,
-    mmRank,
-    wgRank,
-    dzRank
+/**
+ * Rank-related searchable strings for an account (mm, wingman, danger zone).
+ * Kept faithful to the original inline expressions, including the `?? 0`
+ * defaults so an expired/unranked account still matches its rank label.
+ * @param {*} account account object
+ * @returns {Array<String>} rank name strings
+ */
+function buildRankSearchStrings(account) {
+  return [
+    getRankName(account.rank ?? 0, account.wins ?? 0),
+    getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0),
+    getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0)
   ];
-  if (Array.isArray(account.tags)) {
-    list.push(...account.tags);
-  }
-  return list.filter(Boolean).map(s => String(s).toLowerCase());
 }
 
 /**
- * Filter an account against a search query.
- * @param {string} q
- * @param {string} login
- * @param {object} account
- * @returns {boolean}
+ * Identity/status searchable strings for an account (name, tags, prime,
+ * error, penalty, steamid). Faithful to the original inline order and the
+ * deliberate null entries; the search's own `v &&` guard skips the nulls.
+ * @param {String} login account login
+ * @param {*} account account object
+ * @returns {Array} searchable strings (may contain nulls)
  */
+function buildIdentitySearchStrings(login, account) {
+  const strings = [login, account.name ?? null];
+  if (account.tags) {
+    account.tags.forEach(tag => strings.push(tag));
+  }
+  strings.push(account.prime ? "prime" : null);
+  strings.push(account.error ?? null);
+  strings.push(formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1));
+  strings.push(account.steamid ? "" + account.steamid : null);
+  return strings;
+}
+
+/**
+ * Build the list of searchable strings for an account. Pure: the returned
+ * array (including the deliberate null entries) is exactly what execSearch
+ * matches against; the search's own `v &&` guard skips the nulls.
+ * @param {String} login account login
+ * @param {*} account account object
+ * @returns {Array} searchable strings (may contain nulls)
+ */
+function buildSearchStrings(login, account) {
+  return [
+    ...buildIdentitySearchStrings(login, account),
+    ...buildRankSearchStrings(account)
+  ];
+}
+
 function execSearch(q, login, account) {
-  const query = q.trim().toLowerCase();
-  if (query.length === 0) return true;
 
-  const tokens = query.split(' ').filter(Boolean);
-  if (tokens.length === 0) return true;
+  q = q.trim();
+  if (q.length == 0) {
+    return true;
+  }
 
-  const searchData = getAccountSearchStrings(login, account);
-  return tokens.every(token => searchData.some(str => str.includes(token)));
+  let strings = buildSearchStrings(login, account);
+
+  return q.toLowerCase().split(' ').map(x => {
+    return strings.find(v => v && v.toLowerCase().includes(x)) != undefined
+  }).reduce((prev, cur) => prev && cur, true);
 }
 
 /**
@@ -563,7 +313,7 @@ function FindOrCreateRow(login, createCallback) {
  * @param {*} account
  */
 function renderRowTags(row, account) {
-  row.querySelector('.steam_name').innerText = account.name || '?';
+  row.querySelector('.steam-name').innerText = account.name || '?';
   let tags = row.querySelector('.tags')
   while (tags.firstChild) {
     tags.firstChild.remove();
@@ -695,17 +445,15 @@ function premierExpireSuffix(account) {
   return `<br>last match ${day}.${month}.${year} ${hours}:${minutes}`;
 }
 
-function renderSingleRank(imgEl, rank, wins, mode, expireText, isDz) {
-  const rankVal = rank ?? 0;
-  const winsVal = wins ?? 0;
-  imgEl.src = getRankImage(rankVal, winsVal, mode);
-  const rankName = isDz ? getDZRankName(rankVal, winsVal) : getRankName(rankVal, winsVal, mode);
-  const winsDisplay = wins < 0 ? '?' : (wins != null ? wins : '?');
-  imgEl.title = `${rankName}<br>${winsDisplay} wins${expireText}`;
-  const tooltip = bootstrap.Tooltip.getInstance(imgEl);
-  if (tooltip) {
-    tooltip._fixTitle();
-  }
+/**
+ * Build the "<br>expires ..." tooltip suffix for a mode's last-game timestamp,
+ * or '' when there is no timestamp. Mirrors the original inline expression for
+ * the mm/wg/dz modes exactly.
+ * @param {*} lastGame last-game value (timestamp/date-parsable), or falsy
+ * @returns {String}
+ */
+function expireSuffix(lastGame) {
+  return lastGame ? '<br>expires ' + formatExpireTime(new Date(lastGame)) : '';
 }
 
 /**
@@ -714,15 +462,33 @@ function renderSingleRank(imgEl, rank, wins, mode, expireText, isDz) {
  * @param {*} account
  */
 function renderRowRanks(row, account) {
-  const mmExpire = account.last_game ? '<br>expires ' + formatExpireTime(new Date(account.last_game)) : '';
-  const wgExpire = account.last_game_wg ? '<br>expires ' + formatExpireTime(new Date(account.last_game_wg)) : '';
-  const dzExpire = account.last_game_dz ? '<br>expires ' + formatExpireTime(new Date(account.last_game_dz)) : '';
-  const premierExpire = premierExpireSuffix(account);
+  // NOTE: the dz image uses bare `account.wins_dz` (no `?? 0`) while every
+  // other mode uses `?? 0`, and only the mm title guards `wins < 0`. This
+  // asymmetry is deliberate and hard-won; keep it intact.
+  row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
+  row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
+  row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
+  row.querySelector('.rank .premier').src = getRankImage(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier');
 
-  renderSingleRank(row.querySelector('.rank .mm'), account.rank, account.wins, 'mm', mmExpire, false);
-  renderSingleRank(row.querySelector('.rank .wg'), account.rank_wg, account.wins_wg, 'wg', wgExpire, false);
-  renderSingleRank(row.querySelector('.rank .dz'), account.rank_dz, account.wins_dz, 'dz', dzExpire, true);
-  renderSingleRank(row.querySelector('.rank .premier'), account.rank_premier, account.wins_premier, 'premier', premierExpire, false);
+  let mm_expire = expireSuffix(account.last_game);
+  let wg_expire = expireSuffix(account.last_game_wg);
+  let dz_expire = expireSuffix(account.last_game_dz);
+  let premier_expire = premierExpireSuffix(account);
+
+  row.querySelector('.rank .mm').title = getRankName(account.rank ?? 0, account.wins ?? 0) +
+    '<br>' + (account.wins < 0 ? '?' : account.wins ?? '?') + ' wins' + mm_expire;
+  row.querySelector('.rank .wg').title = getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0) +
+    '<br>' + (account.wins_wg ?? '?') + ' wins' + wg_expire;
+  row.querySelector('.rank .dz').title = getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0) +
+    '<br>' + (account.wins_dz ?? '?') + ' wins' + dz_expire;
+  row.querySelector('.rank .premier').title = getRankName(account.rank_premier ?? 0, account.wins_premier ?? 0, 'premier') +
+    '<br>' + (account.wins_premier ?? '?') + ' wins' + premier_expire;
+
+
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .mm'))._fixTitle();
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .wg'))._fixTitle();
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .dz'))._fixTitle();
+  bootstrap.Tooltip.getInstance(row.querySelector('.rank .premier'))._fixTitle();
 }
 
 /**
@@ -731,18 +497,30 @@ function renderRowRanks(row, account) {
  * @param {*} account
  */
 function renderRowBanAndActions(row, account) {
-  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+  row.querySelector('.ban').innerText = banCellText(account);
   row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
   row.querySelector('.copy-code').style.display = 'inline-block';
   row.querySelector('.open-pofile').style.display = 'inline-block';
+}
+
+// Ban-cell text for an active penalty: an explicit error wins, otherwise the
+// formatted penalty. Mirrors the renderRowBanAndActions expression exactly.
+function banCellText(account) {
+  return account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+}
+
+// True when the ban cell should be cleared: no active penalty timer, no error,
+// and no meaningful penalty reason. Preserves the original compound condition.
+function shouldClearBanText(account) {
+  return !account.error && (!account.penalty_reason || account.penalty_reason === '?');
 }
 
 function updateBanText(row, account) {
   const banEl = row.querySelector('.ban');
   if (!banEl) return;
   if (account.penalty_seconds > 0) {
-    banEl.innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
-  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
+    banEl.innerText = banCellText(account);
+  } else if (shouldClearBanText(account)) {
     banEl.innerText = '';
   }
 }
