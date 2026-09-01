@@ -70,6 +70,76 @@ const CHECK_MAX_ATTEMPTS = 3;
 const DEFAULT_CHECK_CONCURRENCY = 3;
 
 /**
+ * Apply parsed GCPD accountmain data (level, XP, prime) onto the in-flight
+ * check data object and persist level/xp/prime onto the stored account.
+ * XP conversion uses xpIntoLevel from helpers/xp.js, where the single CS2 XP
+ * base constant lives.
+ * @param {object} data In-flight check data (mutated)
+ * @param {string} accountMainHtml Raw GCPD accountmain HTML
+ * @param {string} username Account login
+ * @param {object} db simple-json-db instance
+ * @param {Electron.BrowserWindow|null} win Renderer window or null
+ */
+function applyAccountMainData(data, accountMainHtml, username, db, win) {
+    const accountData = parseAccountMain(accountMainHtml);
+    if (!accountData.ok) return;
+
+    if (accountData.cs2_player_level >= 0) {
+        data.lvl = accountData.cs2_player_level;
+    }
+    if (accountData.cs2_player_xp >= 0) {
+        // Convert raw absolute XP to XP-within-level if it looks like a raw
+        // value; leave in-level values unchanged. The CS2 XP base lives in
+        // exactly one place (helpers/xp.js) so it is never duplicated here.
+        data.exp = xpIntoLevel(accountData.cs2_player_xp);
+    }
+
+    data.prime = (data.lvl > 1) || (data.exp > 0);
+    const account = db.get(username);
+    if (account) {
+        if (data.lvl) account.lvl = data.lvl;
+        if (data.exp) account.exp = data.exp;
+        account.prime = data.prime;
+        db.set(username, account);
+        if (win) win.webContents.send('accounts:updated', { login: username, data: account });
+    }
+}
+
+/**
+ * Apply parsed GCPD matchmaking data (ranks, wins, maps, last game) onto the
+ * in-flight check data object. GCPD is only a gap-filler for ranks; the GC
+ * handlers remain authoritative (see helpers/rankMerge.js).
+ * @param {object} data In-flight check data (mutated)
+ * @param {string} matchmakingHtml Raw GCPD matchmaking HTML
+ * @param {string} username Account login
+ */
+function applyMatchmakingData(data, matchmakingHtml, username) {
+    const mmData = parseMatchmaking(matchmakingHtml);
+    if (mmData.ok) {
+        // GCPD is a GAP-FILLER for ranks: the GC handlers (PlayersProfile
+        // 9128 / ClientGCRankUpdate 9194) are authoritative for rank ids.
+        // mergeGcpdMatchmaking never clobbers a VAC/ban sentinel (-1), only
+        // writes when GCPD actually has signal for the mode, and maps expired
+        // premier -> -1 / expired wingman -> rank 0 with wins retained.
+        // See helpers/rankMerge.js.
+        mergeGcpdMatchmaking(data, mmData);
+        logger.debug('GCPD matchmaking resolved', {
+            account: username,
+            rank_premier: data.rank_premier,
+            wins_premier: data.wins_premier,
+            rank_wg: data.rank_wg,
+            wins_wg: data.wins_wg
+        });
+    }
+
+    data.maps = extractCompetitiveMaps(matchmakingHtml);
+    const lastGameMatch = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT)/.exec(matchmakingHtml);
+    if (lastGameMatch) {
+        data.last_game = new Date(lastGameMatch[1]);
+    }
+}
+
+/**
  * Resolve the configured concurrency for mass checks, defaulting to 3.
  * @returns {number}
  */
@@ -649,14 +719,41 @@ function checkErrorMessage(error) {
  * @param {string} username
  * @returns {Promise<object>} the resolved data object, or { error, status }
  */
+function saveAccountCheckSuccess(username, account, res) {
+    const current = db.get(username) || account;
+    for (const key in res) {
+        if (Object.hasOwnProperty.call(res, key)) {
+            current[key] = res[key];
+        }
+    }
+    current.status = STATUS.SUCCESS;
+    db.set(username, current);
+    if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+}
+
+function saveAccountCheckFailure(username, account, lastStatus, lastError) {
+    logger.error('Account check failed', { account: username, op: 'check', status: lastStatus, error: lastError });
+    const message = checkErrorMessage(lastError);
+    const current = db.get(username) || account;
+    current.error = message;
+    current.status = lastStatus;
+    db.set(username, current);
+    if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+    return { error: message, status: lastStatus };
+}
+
+/**
+ * Check an account with automatic retry and exponential backoff.
+ * @param {string} username login
+ * @returns {Promise<object>}
+ */
 async function process_check_account(username) {
     const account = db.get(username);
-    if(!account) {
+    if (!account) {
         return { error: 'unable to find account' };
     }
 
     setAccountStatus(username, STATUS.CHECKING);
-
     let lastError = null;
     let lastStatus = STATUS.ERROR;
 
@@ -664,16 +761,7 @@ async function process_check_account(username) {
         try {
             const res = await check_account(username, account.password, account.sharedSecret);
             logger.debug('Account check completed', { account: username, op: 'check', attempt });
-            // Re-read: earlier attempts / concurrent updates may have changed it.
-            const current = db.get(username) || account;
-            for (const key in res) {
-                if (Object.hasOwnProperty.call(res, key)) {
-                    current[key] = res[key];
-                }
-            }
-            current.status = STATUS.SUCCESS;
-            db.set(username, current);
-            if (win) win.webContents.send('accounts:updated', { login: username, data: current });
+            saveAccountCheckSuccess(username, account, res);
             return res;
         } catch (error) {
             lastError = error;
@@ -692,14 +780,7 @@ async function process_check_account(username) {
         }
     }
 
-    logger.error('Account check failed', { account: username, op: 'check', status: lastStatus, error: lastError });
-    const message = checkErrorMessage(lastError);
-    const current = db.get(username) || account;
-    current.error = message;
-    current.status = lastStatus;
-    db.set(username, current);
-    if (win) win.webContents.send('accounts:updated', { login: username, data: current });
-    return { error: message, status: lastStatus };
+    return saveAccountCheckFailure(username, account, lastStatus, lastError);
 }
 
 ipcMain.handle('ready', () => {
@@ -1040,29 +1121,7 @@ function check_account(username, pass, sharedSecret) {
                     } else if (looksLikeErrorPage(accountMainHtml)) {
                         logger.warn('GCPD accountmain returned error/private page, treating as data unavailable', { account: username });
                     } else if (looksLikeGcpdPage(accountMainHtml)) {
-                            const accountData = parseAccountMain(accountMainHtml);
-                            if (accountData.ok) {
-                                if (accountData.cs2_player_level >= 0) {
-                                    data.lvl = accountData.cs2_player_level;
-                                }
-                                if (accountData.cs2_player_xp >= 0) {
-                                    // Convert raw absolute XP to XP-within-level if it looks
-                                    // like a raw value; leave in-level values unchanged.
-                                    data.exp = xpIntoLevel(accountData.cs2_player_xp);
-                                }
-
-                                // Final prime determination based on level/xp heuristic
-                                data.prime = (data.lvl > 1) || (data.exp > 0);
-
-                                const account = db.get(username);
-                                if (account) {
-                                    if (data.lvl) account.lvl = data.lvl;
-                                    if (data.exp) account.exp = data.exp;
-                                    account.prime = data.prime;
-                                    db.set(username, account);
-                                    if (win) win.webContents.send('accounts:updated', { login: username, data: account });
-                                }
-                            }
+                        applyAccountMainData(data, accountMainHtml, username, db, win);
                     } else {
                         logger.warn('GCPD accountmain response not recognized as GCPD page', { account: username });
                     }
@@ -1077,34 +1136,7 @@ function check_account(username, pass, sharedSecret) {
                     } else if (looksLikeErrorPage(matchmakingHtml)) {
                         logger.warn('GCPD matchmaking returned error/private page, treating as data unavailable', { account: username });
                     } else if (looksLikeGcpdPage(matchmakingHtml)) {
-                            const mmData = parseMatchmaking(matchmakingHtml);
-                            if (mmData.ok) {
-                                // GCPD is a GAP-FILLER for ranks: the GC handlers
-                                // (PlayersProfile 9128 / ClientGCRankUpdate 9194)
-                                // are authoritative for rank ids. mergeGcpdMatchmaking
-                                // never clobbers a VAC/ban sentinel (-1), only writes
-                                // when GCPD actually has signal for the mode, and maps
-                                // expired premier -> -1 / expired wingman -> rank 0
-                                // with wins retained. See helpers/rankMerge.js.
-                                mergeGcpdMatchmaking(data, mmData);
-
-                                logger.debug('GCPD matchmaking resolved', {
-                                    account: username,
-                                    rank_premier: data.rank_premier,
-                                    wins_premier: data.wins_premier,
-                                    rank_wg: data.rank_wg,
-                                    wins_wg: data.wins_wg
-                                });
-                            }
-
-                            // Extract map data using regex (parser does not cover per-map data)
-                            data.maps = extractCompetitiveMaps(matchmakingHtml);
-
-                            // Try extracting last_game date from matchmaking tables
-                            const lastGameMatch = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT)/.exec(matchmakingHtml);
-                            if (lastGameMatch) {
-                                data.last_game = new Date(lastGameMatch[1]);
-                            }
+                        applyMatchmakingData(data, matchmakingHtml, username);
                     } else {
                         logger.warn('GCPD matchmaking response not recognized as GCPD page', { account: username });
                     }
@@ -1197,6 +1229,23 @@ function check_account(username, pass, sharedSecret) {
             // identical to the previous inline switch. The dispatch below
             // selects one by msgType exactly as the switch did.
 
+function processClientWelcomeCacheObject(cache_object, data, username, steamClient, appid, isDone, sleep) {
+    if (!cache_object || !Array.isArray(cache_object.object_data) || cache_object.object_data.length === 0) {
+        return;
+    }
+    if (cache_object.type_id === 7 && Protos.csgo.CSOEconGameAccountClient) {
+        const CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
+        if (!((data.lvl > 1) || (data.exp > 0))) {
+            data.prime = CSOEconGameAccountClient.elevated_state >= 4;
+            console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
+        }
+        sleep(1000).then(function() {
+            if (isDone()) return;
+            steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
+        });
+    }
+}
+
             // GC_MSG.ClientWelcome
             const handleClientWelcome = (appid, payload) => {
                 gcWelcomeReceived = true;
@@ -1209,42 +1258,15 @@ function check_account(username, pass, sharedSecret) {
                     console.error(`[${username}] CMsgClientWelcome proto not found`);
                     return;
                 }
-                let CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
-                // protoDecode returns {} on failure - guard every field.
+                const CMsgClientWelcome = protoDecode(Protos.csgo.CMsgClientWelcome, payload);
                 const outofdateCaches = Array.isArray(CMsgClientWelcome.outofdate_subscribed_caches)
                     ? CMsgClientWelcome.outofdate_subscribed_caches
                     : [];
                 for (let i = 0; i < outofdateCaches.length; i++) {
-                    let outofdate_cache = outofdateCaches[i];
+                    const outofdate_cache = outofdateCaches[i];
                     const cacheObjects = Array.isArray(outofdate_cache.objects) ? outofdate_cache.objects : [];
                     for (let j = 0; j < cacheObjects.length; j++) {
-                        let cache_object = cacheObjects[j];
-                        if (!cache_object || !Array.isArray(cache_object.object_data)) {
-                            continue;
-                        }
-                        if (cache_object.object_data.length == 0) {
-                            continue;
-                        }
-                        switch (cache_object.type_id) {
-                            case 7: {
-                                let CSOEconGameAccountClient = protoDecode(Protos.csgo.CSOEconGameAccountClient, cache_object.object_data[0]);
-                                // elevated_state is only a PRELIMINARY hint. The authoritative
-                                // Prime determination is the level/XP heuristic applied last in
-                                // the accountmain, MatchmakingGC2ClientHello and PlayersProfile
-                                // handlers - do not let this overwrite a heuristic result that
-                                // has already been established (lvl > 1 or exp > 0).
-                                if (!((data.lvl > 1) || (data.exp > 0))) {
-                                    data.prime = CSOEconGameAccountClient.elevated_state >= 4;
-                                    console.log(`[${username}] Prime preliminary from elevated_state=${CSOEconGameAccountClient.elevated_state}: ${data.prime}`);
-                                }
-
-                                sleep(1000).then(function() {
-                                    if (Done) return;
-                                    steamClient.sendToGC(appid, GC_MSG.MatchmakingClient2GCHello, {}, Buffer.alloc(0));
-                                });
-                                break;
-                            }
-                        }
+                        processClientWelcomeCacheObject(cacheObjects[j], data, username, steamClient, appid, () => Done, sleep);
                     }
                 }
             };

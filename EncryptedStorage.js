@@ -83,60 +83,49 @@ class EncryptedStorage {
    * @param {object} [options.newData] Data that will be encrypted for the first time
    * @constructor
    */
-  constructor(filePath, password, options) {
-    // Mandatory arguments check
-    if (!filePath || !filePath.length) {
-      throw new Error('Missing file path argument.');
-    } else {
-      this.filePath = filePath;
-    }
-
-    // Options parsing
-    if (options) {
-      for (let key in defaultOptions) {
-        if (!options.hasOwnProperty(key)) options[key] = defaultOptions[key];
-      }
-      this.options = options;
-    } else {
-      this.options = defaultOptions;
-    }
-
-    this.storage = {};
-
-    if (this.options.newData) {
-      // Brand-new database seeded from caller-supplied data.
-      this._initNewData(password, options.newData);
-      return;
-    }
-
-    // File existence check
+  _checkFileAccess(filePath) {
     let stats;
     try {
       stats = fs.statSync(filePath);
     } catch (err) {
       if (err.code === 'ENOENT') {
-        /* File doesn't exist */
-        this._initFreshDatabase(password, { sync: true });
-        return;
-      } else if (err.code === 'EACCES') {
-        throw new Error(`Cannot access path "${filePath}".`);
-      } else {
-        // Other error
-        throw new Error(`Error while checking for existence of path "${filePath}": ${err}`);
+        return null;
       }
+      if (err.code === 'EACCES') {
+        throw new Error(`Cannot access path "${filePath}".`);
+      }
+      throw new Error(`Error while checking for existence of path "${filePath}": ${err}`);
     }
-    /* File exists */
     try {
       fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
     } catch (err) {
       throw new Error(`Cannot read & write on path "${filePath}". Check permissions!`);
     }
+    return stats;
+  }
+
+  constructor(filePath, password, options) {
+    if (!filePath || !filePath.length) {
+      throw new Error('Missing file path argument.');
+    }
+    this.filePath = filePath;
+    this.options = Object.assign({}, defaultOptions, options);
+    this.storage = {};
+
+    if (this.options.newData) {
+      this._initNewData(password, this.options.newData);
+      return;
+    }
+
+    const stats = this._checkFileAccess(filePath);
+    if (!stats) {
+      this._initFreshDatabase(password, { sync: true });
+      return;
+    }
+
     if (stats.size > 0) {
       this._loadExistingFile(filePath, password);
     } else {
-      // Zero-byte / empty existing file: treat as a loadable-empty database.
-      // Generate fresh iv/salt and derive the key so the DB is usable, but do
-      // not write until the caller performs a sync.
       this._initFreshDatabase(password, { sync: false });
     }
   }

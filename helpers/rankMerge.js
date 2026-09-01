@@ -136,33 +136,38 @@ function mergeGcpdWingman(data, mmData) {
  * data.rank === -1 and data.wins === -1), never on a legitimate expired /
  * unranked rank_id 0.
  *
+ * The secondary GC modes (wingman 7, danger zone 10, premier 11) share
+ * identical apply logic, so their (rank, wins) target keys live in a lookup
+ * table instead of a switch. Competitive (type 6) stays special-cased because
+ * it drives the VAC cascade.
+ *
  * @param {object} data - account data object (mutated in place)
  * @param {object} ranking - a PlayerRankingInfo-like object
  * @returns {object} data
  */
+const GC_MODE_KEYS = {
+  7: ['rank_wg', 'wins_wg'],
+  10: ['rank_dz', 'wins_dz'],
+  11: ['rank_premier', 'wins_premier']
+};
+
 function applyGcRanking(data, ranking) {
   if (!data || !ranking) return data;
   const rankId = ranking.rank_id ?? 0;
   const rankWins = ranking.wins ?? 0;
-  switch (ranking.rank_type_id) {
-    case 6: // competitive
-      if (data.rank !== -1) { data.rank = rankId; data.wins = rankWins; }
-      // If this entry established (or confirmed) a competitive VAC, retroactively
-      // cascade it into any secondary modes already present on the data object.
-      cascadeVac(data);
-      break;
-    case 7: // wingman
-      applySecondaryMode(data, 'rank_wg', 'wins_wg', rankId, rankWins);
-      break;
-    case 10: // dangerzone
-      applySecondaryMode(data, 'rank_dz', 'wins_dz', rankId, rankWins);
-      break;
-    case 11: // premier
-      // Premier expired sentinel is -1; do not clobber it. rank_id 0 means
-      // unranked/none here (the expired mapping comes from the GCPD path,
-      // which has the wins signal to distinguish expired from never-ranked).
-      applySecondaryMode(data, 'rank_premier', 'wins_premier', rankId, rankWins);
-      break;
+
+  if (ranking.rank_type_id === 6) {
+    if (data.rank !== -1) {
+      data.rank = rankId;
+      data.wins = rankWins;
+    }
+    cascadeVac(data);
+    return data;
+  }
+
+  const keys = GC_MODE_KEYS[ranking.rank_type_id];
+  if (keys) {
+    applySecondaryMode(data, keys[0], keys[1], rankId, rankWins);
   }
   return data;
 }

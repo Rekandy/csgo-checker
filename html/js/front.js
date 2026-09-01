@@ -96,6 +96,41 @@ function createTagEdit(name, color = '#000000') {
  * @returns {Boolean} matches? 
  */
 /**
+ * Rank-related searchable strings for an account (mm, wingman, danger zone).
+ * Kept faithful to the original inline expressions, including the `?? 0`
+ * defaults so an expired/unranked account still matches its rank label.
+ * @param {*} account account object
+ * @returns {Array<String>} rank name strings
+ */
+function buildRankSearchStrings(account) {
+  return [
+    getRankName(account.rank ?? 0, account.wins ?? 0),
+    getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0),
+    getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0)
+  ];
+}
+
+/**
+ * Identity/status searchable strings for an account (name, tags, prime,
+ * error, penalty, steamid). Faithful to the original inline order and the
+ * deliberate null entries; the search's own `v &&` guard skips the nulls.
+ * @param {String} login account login
+ * @param {*} account account object
+ * @returns {Array} searchable strings (may contain nulls)
+ */
+function buildIdentitySearchStrings(login, account) {
+  const strings = [login, account.name ?? null];
+  if (account.tags) {
+    account.tags.forEach(tag => strings.push(tag));
+  }
+  strings.push(account.prime ? "prime" : null);
+  strings.push(account.error ?? null);
+  strings.push(formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1));
+  strings.push(account.steamid ? "" + account.steamid : null);
+  return strings;
+}
+
+/**
  * Build the list of searchable strings for an account. Pure: the returned
  * array (including the deliberate null entries) is exactly what execSearch
  * matches against; the search's own `v &&` guard skips the nulls.
@@ -104,22 +139,10 @@ function createTagEdit(name, color = '#000000') {
  * @returns {Array} searchable strings (may contain nulls)
  */
 function buildSearchStrings(login, account) {
-  let strings = [];
-  strings.push(login);
-  strings.push(account.name ?? null);
-  if (account.tags) {
-    account.tags.forEach(tag => {
-      strings.push(tag);
-    });
-  }
-  strings.push(account.prime ? "prime" : null);
-  strings.push(account.error ?? null);
-  strings.push(formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1));
-  strings.push(account.steamid ? "" + account.steamid : null)
-  strings.push(getRankName(account.rank ?? 0, account.wins ?? 0));
-  strings.push(getRankName(account.rank_wg ?? 0, account.wins_wg ?? 0));
-  strings.push(getDZRankName(account.rank_dz ?? 0, account.wins_dz ?? 0));
-  return strings;
+  return [
+    ...buildIdentitySearchStrings(login, account),
+    ...buildRankSearchStrings(account)
+  ];
 }
 
 function execSearch(q, login, account) {
@@ -134,7 +157,6 @@ function execSearch(q, login, account) {
   return q.toLowerCase().split(' ').map(x => {
     return strings.find(v => v && v.toLowerCase().includes(x)) != undefined
   }).reduce((prev, cur) => prev && cur, true);
-
 }
 
 /**
@@ -440,6 +462,9 @@ function expireSuffix(lastGame) {
  * @param {*} account
  */
 function renderRowRanks(row, account) {
+  // NOTE: the dz image uses bare `account.wins_dz` (no `?? 0`) while every
+  // other mode uses `?? 0`, and only the mm title guards `wins < 0`. This
+  // asymmetry is deliberate and hard-won; keep it intact.
   row.querySelector('.rank .mm').src = getRankImage(account.rank ?? 0, account.wins ?? 0, 'mm');
   row.querySelector('.rank .wg').src = getRankImage(account.rank_wg ?? 0, account.wins_wg ?? 0, 'wg');
   row.querySelector('.rank .dz').src = getRankImage(account.rank_dz ?? 0, account.wins_dz, 'dz');
@@ -472,13 +497,20 @@ function renderRowRanks(row, account) {
  * @param {*} account
  */
 function renderRowBanAndActions(row, account) {
-  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1)
-
+  row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
   row.querySelector(".copy-steamguard").style.display = account.sharedSecret ? 'initial' : 'none';
-
-  // Отображаем кнопки для всех аккаунтов
   row.querySelector('.copy-code').style.display = 'inline-block';
   row.querySelector('.open-pofile').style.display = 'inline-block';
+}
+
+function updateBanText(row, account) {
+  const banEl = row.querySelector('.ban');
+  if (!banEl) return;
+  if (account.penalty_seconds > 0) {
+    banEl.innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
+  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
+    banEl.innerText = '';
+  }
 }
 
 function updateRow(row, login, account, force) {
@@ -497,13 +529,7 @@ function updateRow(row, login, account, force) {
     changed = true;
   }
 
-  if (account.penalty_seconds > 0) {
-    row.querySelector('.ban').innerText = account.error ?? formatPenalty(account.penalty_reason ?? '?', account.penalty_seconds ?? -1);
-  } else if (!account.error && (!account.penalty_reason || account.penalty_reason === '?')) {
-    // Дополнительная проверка для очистки вкладки ban/error при обновлении счетчика
-    row.querySelector('.ban').innerText = '';
-  }
-
+  updateBanText(row, account);
   return changed;
 }
 
