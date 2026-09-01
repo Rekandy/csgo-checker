@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, clipboard, shell } = require("electron");
 const equal = require('fast-deep-equal');
 const friendCode = require("csgo-friendcode");
 const { renderMarkdown } = require('./helpers/markdown');
+const { escapeHtml } = require('./helpers/htmlEscape');
 // SECURITY NOTE: markdown rendering is delegated to helpers/markdown.js, which
 // uses markdown-it configured with `html: false`. Raw HTML in the markdown
 // source is escaped rather than emitted, so the returned string is safe to
@@ -56,4 +57,13 @@ contextBridge.exposeInMainWorld('shell', {
 
 contextBridge.exposeInMainWorld('md_converter', {
   makeHtml: (markdown) => renderMarkdown(markdown)
+});
+
+contextBridge.exposeInMainWorld('htmlEscape', {
+  // SECURITY NOTE: single source of truth for renderer-side HTML escaping
+  // (helpers/htmlEscape.js). Used by the maps-rating modal and the dynamic
+  // showToast call sites in html/js/front.js to neutralize attribute-breakout
+  // from GCPD-scraped map name / skill_group and from backend-derived error
+  // text before those values are interpolated into innerHTML.
+  escape: (value) => escapeHtml(value)
 });
