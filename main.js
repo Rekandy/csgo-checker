@@ -1146,7 +1146,7 @@ function check_account(username, pass, sharedSecret) {
                     const profileHtml = await fetchWithRetry(`https://steamcommunity.com/profiles/${steamid64}`);
                     if (profileHtml) {
                         const nameMatch = /class="[^"]*persona_name_text_content[^"]*"[^>]*>([^<]+)</.exec(profileHtml);
-                        if (nameMatch && nameMatch[1]) {
+                        if (nameMatch?.[1]) {
                             data.name = nameMatch[1].trim();
                             const account = db.get(username);
                             if (account) {
@@ -1353,7 +1353,7 @@ function processClientWelcomeCacheObject(cache_object, data, username, steamClie
                 data.penalty_seconds = resolveHelloPenaltySeconds(msg, limitations);
                 data.wins = resolveHelloWins(msg, haveRanking, ranking);
                 data.rank = resolveHelloRank(msg, haveRanking, ranking);
-                data.name = (steamClient.accountInfo && steamClient.accountInfo.name) || data.name || username;
+                data.name = steamClient.accountInfo?.name || data.name || username;
                 data.lvl = msg.player_level || data.lvl;
                 data.steamid = steamClient.steamID.getSteamID64();
                 data.error = null;
