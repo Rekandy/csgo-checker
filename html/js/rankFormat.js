@@ -167,7 +167,7 @@ function getRankName(rank, wins, type) {
   }
   // Match the original strict `switch (rank)` semantics: only an exact numeric
   // rank id maps to a name; anything else (incl. numeric strings) is Unknown.
-  return Object.prototype.hasOwnProperty.call(MM_RANK_NAMES, rank) && typeof rank === 'number'
+  return Object.hasOwn(MM_RANK_NAMES, rank) && typeof rank === 'number'
     ? MM_RANK_NAMES[rank]
     : `Unknown(${rank})`;
 }
@@ -204,7 +204,7 @@ const DZ_RANK_NAMES = {
     return wins >= 1 ? "Expired or Unranked" : "Unranked";
   }
   // Match the original strict `switch (rank)` semantics.
-  return Object.prototype.hasOwnProperty.call(DZ_RANK_NAMES, rank) && typeof rank === 'number'
+  return Object.hasOwn(DZ_RANK_NAMES, rank) && typeof rank === 'number'
     ? DZ_RANK_NAMES[rank]
     : `Unknown(${rank})`;
 }

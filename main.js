@@ -670,7 +670,7 @@ ipcMain.handle('app:version', app.getVersion);
 ipcMain.handle('accounts:get', () => {
     let data = db.JSON();
     for (const username in data) {
-        if (Object.hasOwnProperty.call(data, username)) {
+        if (Object.hasOwn(data, username)) {
             const account = data[username];
             if(currently_checking.indexOf(username) != -1){
                 account.pending = true;
@@ -761,7 +761,7 @@ function checkErrorMessage(error) {
 function saveAccountCheckSuccess(username, account, res) {
     const current = db.get(username) || account;
     for (const key in res) {
-        if (Object.hasOwnProperty.call(res, key)) {
+        if (Object.hasOwn(res, key)) {
             current[key] = res[key];
         }
     }

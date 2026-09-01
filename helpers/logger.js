@@ -34,7 +34,7 @@ const REDACTED = '[REDACTED]';
  */
 function resolveLevel() {
     const fromEnv = (process.env.LOG_LEVEL || '').trim().toUpperCase();
-    if (Object.prototype.hasOwnProperty.call(LEVELS, fromEnv)) {
+    if (Object.hasOwn(LEVELS, fromEnv)) {
         return fromEnv;
     }
     let isDev = false;
@@ -55,7 +55,7 @@ let currentLevel = resolveLevel();
  */
 function setLevel(level) {
     const normalized = (level || '').trim().toUpperCase();
-    if (Object.prototype.hasOwnProperty.call(LEVELS, normalized)) {
+    if (Object.hasOwn(LEVELS, normalized)) {
         currentLevel = normalized;
     }
 }
