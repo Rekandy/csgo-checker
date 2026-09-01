@@ -10,6 +10,14 @@ let account_cache = {};
 let tags_cache = {};
 let encrypted = false;
 
+// SECURITY: renderer-side alias for the single-source-of-truth HTML escaper
+// exposed by preload (helpers/htmlEscape.js). Used to neutralize
+// attribute-breakout from GCPD-scraped map data and backend-derived error text
+// before those values are interpolated into innerHTML. It is a no-op for
+// legitimate values (they contain none of & < > " '), so rendered output for
+// normal Steam data is unchanged.
+const escapeHtml = (value) => window.htmlEscape.escape(value);
+
 // The pure rank/format helpers (RANK_IMAGE_PREFIXES, PREMIER_BUCKETS,
 // findPremierBucket, isPremierUnranked, getRankImage, MM_RANK_NAMES,
 // getPremierRankName, getRankName, DZ_RANK_NAMES, getDZRankName, countdown,
@@ -626,7 +634,11 @@ async function updateAccounts(force = false) {
         updateAccounts();
         let ret = await promise;
         if (ret.error) {
-          showToast(login + ': ' + ret.error, 'danger');
+          // SECURITY: escape login + backend-derived ret.error before they
+          // reach showToast's innerHTML sink so hostile text cannot inject
+          // markup. showToast itself keeps innerHTML for the intentional
+          // static-HTML update-link toast.
+          showToast(escapeHtml(login) + ': ' + escapeHtml(ret.error), 'danger');
         }
         updateAccounts();
       });
@@ -792,7 +804,9 @@ document.addEventListener('DOMContentLoaded', () => {
       updateAccounts();
       ret = await ret;
       if (ret.error) {
-        showToast(username.value + ': ' + ret.error, 'danger');
+        // SECURITY: escape username + backend-derived ret.error before the
+        // showToast innerHTML sink (see note at the login: ret.error site).
+        showToast(escapeHtml(username.value) + ': ' + escapeHtml(ret.error), 'danger');
       }
       updateAccounts();
     } else {
@@ -807,7 +821,9 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAccounts();
     let ret = await promise;
     if (ret.error) {
-      showToast(username.value + ': ' + ret.error, 'danger');
+      // SECURITY: escape username + backend-derived ret.error before the
+      // showToast innerHTML sink (see note at the login: ret.error site).
+      showToast(escapeHtml(username.value) + ': ' + escapeHtml(ret.error), 'danger');
     }
     updateAccounts();
   });
@@ -1025,21 +1041,41 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
           
-          // Получаем путь к значку карты
+          // Получаем путь к значку карты.
+          // NOTE: getMapIconPath is keyed off the RAW (unescaped) mapName so
+          // the icon lookup still resolves; escaping happens only at the
+          // interpolation boundary below.
           const mapIconPath = getMapIconPath(mapName);
+
+          // SECURITY: mapName and mapData.skill_group are scraped from external
+          // Steam GCPD HTML (helpers/gcpd_parser.js) and could contain an
+          // attribute-breakout payload like `x" onerror="alert(1)`. Escape
+          // them before they enter innerHTML (both text nodes and alt/title
+          // attributes). Legitimate map names / skill groups contain none of
+          // the escaped characters, so this is a no-op for normal data.
+          const mapNameSafe = escapeHtml(mapName);
+          const skillGroupSafe = escapeHtml(mapData.skill_group || 'N/A');
+          // SECURITY: getMapIconPath's `de_`/`ar_`/`cs_` fallback returns
+          // `img/maps-icons/${mapName}.svg` with the RAW scraped name embedded,
+          // so a prefixed breakout name like `de_x" onerror="alert(1)` would
+          // otherwise close the src="..." attribute and inject a handler. Escape
+          // the returned path at the interpolation boundary; this is a no-op for
+          // legitimate paths (they contain none of & < > " '), so real icons
+          // still resolve byte-identically.
+          const mapIconPathSafe = escapeHtml(mapIconPath);
           
           row.innerHTML = `
             <td class="text-center" style="width: 50px;">
-              ${mapIconPath ? `<img src="${mapIconPath}" alt="${mapName}" style="max-width: 100%;" onerror="this.style.display='none'">` : ''}
+              ${mapIconPath ? `<img src="${mapIconPathSafe}" alt="${mapNameSafe}" style="max-width: 100%;" onerror="this.style.display='none'">` : ''}
             </td>
-            <td class="text-center">${mapName}</td>
+            <td class="text-center">${mapNameSafe}</td>
             <td class="text-center">${mapData.wins || 0}</td>
             <td class="text-center">${mapData.ties || 0}</td>
             <td class="text-center">${mapData.losses || 0}</td>
             <td class="text-center">
-              <img src="${getRankImage(rank, 0, 'mm')}" alt="${mapData.skill_group || 'N/A'}" class="rank-image" style="height: 26px;" 
+              <img src="${getRankImage(rank, 0, 'mm')}" alt="${skillGroupSafe}" class="rank-image" style="height: 26px;" 
                    data-bs-toggle="tooltip" data-bs-html="true" 
-                   title="${mapData.skill_group || 'N/A'}">
+                   title="${skillGroupSafe}">
             </td>
             <td class="text-center">${lastMatch}</td>
           `;

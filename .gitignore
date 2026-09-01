@@ -1,4 +1,4 @@
 node_modules/
 out/
 dist/
-publish.sh
+publish.sh.agents/
