@@ -130,7 +130,7 @@ function buildTypeMap(root, ignoreErrors) {
 		} catch (err) {
 			// Type may not exist in this particular set of proto files
 			if (!ignoreErrors) {
-				throw new Error(`Failed to look up type ${typeName}: ${err.message}`);
+				throw new Error(`Failed to look up type ${typeName}: ${err.message}`, { cause: err });
 			}
 		}
 	}

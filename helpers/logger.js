@@ -37,7 +37,7 @@ function resolveLevel() {
     if (Object.prototype.hasOwnProperty.call(LEVELS, fromEnv)) {
         return fromEnv;
     }
-    let isDev = false;
+    let isDev;
     try {
         // electron-is-dev throws outside of Electron; treat that as non-dev.
         isDev = !!require('electron-is-dev');
