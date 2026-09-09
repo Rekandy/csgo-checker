@@ -2,7 +2,7 @@ const js = require("@eslint/js");
 const globals = require("globals");
 
 /**
- * ESLint flat config (eslint@9).
+ * ESLint flat config (eslint@10 / flat config).
  *
  * Pragmatic setup: the recommended rule set with a few relaxations so it passes
  * on the existing large source files without forcing a stylistic rewrite.

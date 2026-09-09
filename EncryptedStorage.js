@@ -62,7 +62,7 @@ function validateJSON(fileContent) {
   try {
     JSON.parse(fileContent);
   } catch (e) {
-    throw new Error('Given filePath is not empty and its content is not valid JSON.');
+    throw new Error('Given filePath is not empty and its content is not valid JSON.', { cause: e });
   }
   return true;
 }
@@ -92,14 +92,14 @@ class EncryptedStorage {
         return null;
       }
       if (err.code === 'EACCES') {
-        throw new Error(`Cannot access path "${filePath}".`);
+        throw new Error(`Cannot access path "${filePath}".`, { cause: err });
       }
-      throw new Error(`Error while checking for existence of path "${filePath}": ${err}`);
+      throw new Error(`Error while checking for existence of path "${filePath}": ${err}`, { cause: err });
     }
     try {
       fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
     } catch (err) {
-      throw new Error(`Cannot read & write on path "${filePath}". Check permissions!`);
+      throw new Error(`Cannot read & write on path "${filePath}". Check permissions!`, { cause: err });
     }
     return stats;
   }
@@ -312,9 +312,9 @@ class EncryptedStorage {
         // the original target intact.
         try { fs.unlinkSync(tmpPath); } catch (e) { /* ignore cleanup failure */ }
         if (err.code === 'EACCES') {
-          throw new Error(`Cannot access path "${this.filePath}".`);
+          throw new Error(`Cannot access path "${this.filePath}".`, { cause: err });
         } else {
-          throw new Error(`Error while writing to path "${this.filePath}": ${err}`);
+          throw new Error(`Error while writing to path "${this.filePath}": ${err}`, { cause: err });
         }
       }
     }
