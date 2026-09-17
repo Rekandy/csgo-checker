@@ -1,9 +1,9 @@
 let JSONdb = require('simple-json-db');
 let crypto = require('node:crypto');
-const { pbkdf2: deriveKey } = require("pbkdf2");
 const events = require('node:events');
 const util = require('node:util');
 const fs = require("node:fs");
+const deriveKey = util.promisify(crypto.pbkdf2);
 
 const DERIVATION_ROUNDS = 200000;
 const HMAC_KEY_SIZE = 32;
@@ -17,17 +17,6 @@ const defaultOptions = {
   parse: JSON.parse
 };
 
-function pbkdf2(password, salt, rounds, bits) {
-  return new Promise((resolve, reject) => {
-    deriveKey(password, salt, rounds, bits / 8, "sha256", (err, key) => {
-      if (err) {
-        return reject(err);
-      }
-      return resolve(key);
-    });
-  });
-}
-
 async function deriveFromPassword(password, salt, rounds) {
   if (!password) {
     throw new Error("Failed deriving key: Password must be provided");
@@ -39,7 +28,7 @@ async function deriveFromPassword(password, salt, rounds) {
     throw new Error("Failed deriving key: Rounds must be greater than 0");
   }
   const bits = (PASSWORD_KEY_SIZE + HMAC_KEY_SIZE) * 8;
-  const derivedKeyData = await pbkdf2(password, salt, rounds, bits);
+  const derivedKeyData = await deriveKey(password, salt, rounds, bits / 8, "sha256");
   const derivedKeyHex = derivedKeyData.toString("hex");
   return Buffer.from(derivedKeyHex.slice(0, derivedKeyHex.length / 2), "hex");
 }

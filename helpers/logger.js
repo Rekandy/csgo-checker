@@ -29,7 +29,7 @@ const REDACTED = '[REDACTED]';
 /**
  * Resolve the active log level from the environment.
  * - LOG_LEVEL env var wins if it names a known level.
- * - Otherwise DEBUG when running in an Electron dev build (best effort), else INFO.
+ * - Otherwise DEBUG when running as an unpackaged Electron app, else INFO.
  * @returns {string} one of DEBUG|INFO|WARN|ERROR
  */
 function resolveLevel() {
@@ -37,13 +37,9 @@ function resolveLevel() {
     if (Object.hasOwn(LEVELS, fromEnv)) {
         return fromEnv;
     }
-    let isDev;
-    try {
-        // electron-is-dev throws outside of Electron; treat that as non-dev.
-        isDev = !!require('electron-is-dev');
-    } catch {
-        isDev = false;
-    }
+    // Electron sets defaultApp for `electron .` and leaves it unset for a
+    // packaged application. Outside Electron this remains false.
+    const isDev = process.defaultApp === true;
     return isDev ? 'DEBUG' : 'INFO';
 }
 

@@ -1,9 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const isDev = require('electron-is-dev');
+const isDev = !app.isPackaged;
 const EncryptedStorage = require('./EncryptedStorage.js');
 let JSONdb = require('simple-json-db');
-const axios = require('axios').default;
 const User = require('steam-user');
 const SteamTotp = require('steam-totp');
 const fs = require('node:fs');
@@ -1127,14 +1126,24 @@ function check_account(username, pass, sharedSecret) {
                 async function fetchWithRetry(url, maxRetries) {
                     if (maxRetries === undefined) maxRetries = 2;
                     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), 15000);
                         try {
-                            const res = await axios.get(url, { headers: headers, timeout: 15000 });
-                            return res.data;
+                            const res = await fetch(url, {
+                                headers,
+                                signal: controller.signal,
+                            });
+                            if (!res.ok) {
+                                throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                            }
+                            return await res.text();
                         } catch (err) {
                             console.log(`[${username}] HTTP request failed (attempt ${attempt + 1}/${maxRetries + 1}): ${url} - ${err.message}`);
                             if (attempt < maxRetries) {
                                 await sleep(2000);
                             }
+                        } finally {
+                            clearTimeout(timeout);
                         }
                     }
                     return null;
