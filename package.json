@@ -17,7 +17,7 @@
   "license": "GPL-3.0-or-later",
   "overrides": {
     "steam-appticket": "^2.0.1",
-    "adm-zip": "^0.6.0"
+    "adm-zip": "^0.6.1"
   },
   "dependencies": {
     "csgo-friendcode": "^3.0.3",
